@@ -42,14 +42,21 @@ async fn main() -> anyhow::Result<()> {
     let db_pool = db::init_pool().await?;
     info!("Database pool initialized");
 
+    // Initialize shared HTTP client for connection pooling
+    let http_client = Arc::new(reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .pool_max_idle_per_host(10)
+        .build()?);
+    info!("HTTP client initialized with connection pooling");
+
     // Initialize scraper manager
     let scraper_manager = Arc::new(ScraperManager::new()?);
     
     // Initialize Real-Debrid client
     let debrid_client = Arc::new(debrid::RealDebridClient::new()?);
 
-    // Initialize metadata client
-    let metadata_client = Arc::new(MetadataClient::new()?);
+    // Initialize metadata client with shared HTTP client
+    let metadata_client = Arc::new(MetadataClient::new(http_client.clone())?);
 
     let app_state = AppState {
         db_pool,
