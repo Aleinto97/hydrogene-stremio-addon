@@ -168,7 +168,9 @@ struct StreamResponse {
 struct Stream {
     name: String,
     description: String,
+    #[serde(rename = "infoHash")]
     info_hash: Option<String>,
+    #[serde(rename = "url")]
     url: Option<String>,
     #[serde(rename = "behaviorHints")]
     behavior_hints: serde_json::Value,
@@ -302,6 +304,10 @@ async fn stream_handler(
     };
 
     // Convert to Stremio streams
+    // Get base URL for absolute URLs
+    let base_url = std::env::var("BASE_URL")
+        .unwrap_or_else(|_| "http://torrentio-stack-aleinto97-54335f00.koyeb.app".to_string());
+    
     let streams: Vec<Stream> = torrents
         .into_iter()
         .map(|t| Stream {
@@ -315,7 +321,7 @@ async fn stream_handler(
                 id
             ),
             info_hash: Some(t.info_hash.clone()),
-            url: Some(format!("/resolve/{}", t.info_hash)),
+            url: Some(format!("{}/resolve/{}", base_url, t.info_hash)),
             behavior_hints: serde_json::json!({
                 "bingeGroup": "torrent-".to_string() + &t.source,
                 "filename": t.title
