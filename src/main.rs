@@ -146,7 +146,22 @@ async fn stream_handler(
     // Strip .json extension if present
     let id = id.trim_end_matches(".json").to_string();
     
-    eprintln!("DEBUG: Stream request: type={}, id={}", content_type, id);
+    // Stremio sends IDs in various formats:
+    // - Movies: tt1375666
+    // - Series episodes: tt0903747:1:2 (ID:season:episode)
+    // - Anime: kitsu:12345
+    // Extract base ID for metadata lookup
+    let base_id = id.split(':').next().unwrap_or(&id).to_string();
+    let metadata_id = if id.contains(':') && !id.starts_with("kitsu:") {
+        // For series episodes, use base ID (tt0903747)
+        base_id.clone()
+    } else {
+        // For movies and anime, use full ID
+        id.clone()
+    };
+    
+    eprintln!("DEBUG: Stream request: type={}, id={}, base_id={}, metadata_id={}", 
+              content_type, id, base_id, metadata_id);
     info!("Stream request: type={}, id={}", content_type, id);
 
     // Try to get from cache first
@@ -185,8 +200,8 @@ async fn stream_handler(
         let tmdb_key = std::env::var("TMDB_API_KEY").ok();
         eprintln!("DEBUG: TMDB_API_KEY present: {}", tmdb_key.is_some());
         
-        // Lookup metadata to get title
-        let metadata = match state.metadata_client.lookup_by_imdb(&id, &content_type).await {
+        // Lookup metadata to get title (use metadata_id for series episodes)
+        let metadata = match state.metadata_client.lookup_by_imdb(&metadata_id, &content_type).await {
             Ok(meta) => {
                 eprintln!("DEBUG: Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
                 info!("Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
