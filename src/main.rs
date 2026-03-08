@@ -293,14 +293,14 @@ async fn stream_handler(
     // Stremio sends IDs in various formats:
     // - Movies: tt1375666
     // - Series episodes: tt0903747:1:2 (ID:season:episode)
-    // - Anime: kitsu:12345
+    // - Anime: kitsu:12345 or anilist:16498
     // Extract base ID for metadata lookup
     let base_id = id.split(':').next().unwrap_or(&id).to_string();
-    let metadata_id = if id.contains(':') && !id.starts_with("kitsu:") {
-        // For series episodes, use base ID (tt0903747)
+    let metadata_id = if id.contains(':') && !id.starts_with("kitsu:") && !id.starts_with("anilist:") {
+        // For series episodes (tt:season:episode format), use base ID (tt0903747)
         base_id.clone()
     } else {
-        // For movies and anime, use full ID
+        // For movies and anime (kitsu: or anilist:), use full ID
         id.clone()
     };
     
