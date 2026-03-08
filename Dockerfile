@@ -2,7 +2,7 @@
 # Stage 1: Builder
 # Heavy container for compiling Rust code
 # ===========================================
-FROM rust:1.75-slim-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 # Install required dependencies for compilation
 RUN apt-get update && apt-get install -y \
