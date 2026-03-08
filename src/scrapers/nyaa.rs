@@ -26,7 +26,8 @@ struct RSSTorrent {
 impl NyaaScraper {
     pub fn new() -> Result<Self> {
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(8))
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()?;
         
         Ok(Self { client })
@@ -37,20 +38,26 @@ impl NyaaScraper {
         // RSS endpoint for Nyaa - format: ?page=rss&q=searchterm
         let search_url = format!("{}/?page=rss&q={}", base_url, urlencoding::encode(query));
         
+        tracing::info!("Nyaa RSS search: {}", search_url);
+        
         let response = self.client
             .get(&search_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .send()
             .await?;
 
         if !response.status().is_success() {
+            tracing::error!("Nyaa RSS returned status: {}", response.status());
             return Err(anyhow::anyhow!("Nyaa RSS returned status: {}", response.status()));
         }
 
         let rss_content = response.text().await?;
         
+        tracing::info!("Nyaa RSS returned {} bytes", rss_content.len());
+        
         // Parse RSS XML
         let torrents = self.parse_nyaa_rss(&rss_content, is_nsfw)?;
+        
+        tracing::info!("Nyaa RSS parsed {} torrents", torrents.len());
         
         Ok(torrents)
     }

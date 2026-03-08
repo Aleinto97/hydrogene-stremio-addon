@@ -1,8 +1,9 @@
 use axum::{
     routing::{get, post},
     Router,
-    extract::{Path, State},
-    response::{Json, Redirect},
+    extract::{Path, State, Request},
+    response::{Json, Redirect, Response},
+    middleware,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -67,6 +68,9 @@ async fn main() -> anyhow::Result<()> {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(app_state);
 
+    // Add global timeout middleware (15 seconds max per request)
+    let app = app.layer(axum::middleware::from_fn(timeout_middleware));
+    
     // Get port from env or default to 8080
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "8080".to_string())
@@ -79,6 +83,37 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+// Timeout middleware - returns empty result if request takes too long
+async fn timeout_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let uri = req.uri().to_string();
+    
+    // Skip timeout for health checks and manifest
+    if uri == "/" || uri == "/manifest.json" {
+        return next.run(req).await;
+    }
+    
+    // Apply 15 second timeout for stream requests
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        next.run(req)
+    ).await {
+        Ok(response) => response,
+        Err(_) => {
+            tracing::warn!("Request timeout for {} after 15s", uri);
+            // Return empty streams on timeout
+            let body = axum::body::Body::from(r#"{"streams": []}"#);
+            axum::response::Response::builder()
+                .status(200)
+                .header("Content-Type", "application/json")
+                .body(body)
+                .unwrap()
+        }
+    }
 }
 
 async fn root_handler() -> &'static str {

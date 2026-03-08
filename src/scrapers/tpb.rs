@@ -4,12 +4,8 @@ use serde::Deserialize;
 use anyhow::Result;
 use crate::scrapers::{Scraper, ScrapedTorrent, create_magnet};
 
-// The Pirate Bay has multiple mirrors - we'll try them in order
-const TPB_MIRRORS: &[&str] = &[
-    "https://apibay.org",
-    "https://piratebay.live",
-    "https://tpb.party",
-];
+// The Pirate Bay official API - no blocks, no Cloudflare
+const TPB_API: &str = "https://apibay.org";
 
 #[derive(Debug, Deserialize)]
 struct TPBResult {
@@ -36,30 +32,49 @@ pub struct TPBScraper {
 impl TPBScraper {
     pub fn new() -> Result<Self> {
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(8))
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()?;
         
         Ok(Self { client })
     }
 
-    async fn search_with_mirror(&self, query: &str, mirror: &str) -> Result<Vec<ScrapedTorrent>> {
-        let search_url = format!("{}/q.php?q={}&cat=0", mirror, urlencoding::encode(query));
+    pub async fn search(&self, query: &str, _content_type: &str) -> Result<Vec<ScrapedTorrent>> {
+        tracing::info!("TPB API search for: {}", query);
         
-        let response = self.client
+        let search_url = format!("{}/q.php?q={}&cat=0", TPB_API, urlencoding::encode(query));
+        
+        let response = match self.client
             .get(&search_url)
             .send()
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!("TPB API request failed: {}", e);
+                return Ok(Vec::new());
+            }
+        };
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("TPB mirror returned status: {}", response.status()));
+            tracing::error!("TPB API returned status: {}", response.status());
+            return Ok(Vec::new());
         }
 
-        let results: Vec<TPBResult> = response.json().await?;
+        let results: Vec<TPBResult> = match response.json().await {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::error!("TPB API JSON parse failed: {}", e);
+                return Ok(Vec::new());
+            }
+        };
+        
+        tracing::info!("TPB API returned {} results", results.len());
         
         let mut torrents = Vec::new();
         
         for result in results {
-            // Skip if ID is "0" (no results)
+            // Skip if ID is "0" (no results marker)
             if result.id == "0" {
                 continue;
             }
@@ -68,8 +83,8 @@ impl TPBScraper {
             let seeders: i32 = result.seeders.parse().unwrap_or(0);
             let leechers: i32 = result.leechers.parse().unwrap_or(0);
             
-            if seeders == 0 && result.id != "0" {
-                // API sometimes returns 0 for all seeders - skip if dead
+            // Skip dead torrents (0 seeders)
+            if seeders == 0 {
                 continue;
             }
             
@@ -91,6 +106,7 @@ impl TPBScraper {
             });
         }
         
+        tracing::info!("TPB filtered to {} valid torrents", torrents.len());
         Ok(torrents)
     }
 
@@ -114,21 +130,11 @@ impl TPBScraper {
 #[async_trait]
 impl Scraper for TPBScraper {
     fn name(&self) -> &str {
-        "The Pirate Bay"
+        "The Pirate Bay (API)"
     }
 
-    async fn search(&self, query: &str, _content_type: &str) -> Result<Vec<ScrapedTorrent>> {
-        // Try mirrors in order until one works
-        for mirror in TPB_MIRRORS {
-            match self.search_with_mirror(query, mirror).await {
-                Ok(torrents) if !torrents.is_empty() => return Ok(torrents),
-                Ok(_) => continue, // Empty results, try next mirror
-                Err(_) => continue, // Error, try next mirror
-            }
-        }
-        
-        // All mirrors failed
-        Ok(Vec::new())
+    async fn search(&self, query: &str, content_type: &str) -> Result<Vec<ScrapedTorrent>> {
+        self.search(query, content_type).await
     }
 
     fn supports_anime(&self) -> bool {
