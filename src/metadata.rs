@@ -370,8 +370,8 @@ impl MetadataClient {
 
                 let year = item.release_date
                     .or_else(|| item.first_air_date)
-                    .and_then(|d| d.split('-').next())
-                    .map(|y| y.to_string());
+                    .map(|d| d.split('-').next().map(|y| y.to_string()).unwrap_or_default())
+                    .filter(|y| !y.is_empty());
 
                 let mut queries = vec![title.clone()];
                 if let Some(ref y) = year {
