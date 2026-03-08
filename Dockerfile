@@ -19,7 +19,6 @@ COPY Cargo.toml Cargo.lock ./
 
 # Copy source code
 COPY src ./src
-COPY migrations ./migrations
 
 # Build dependencies (cached layer)
 RUN cargo build --release --locked 2>/dev/null || true
@@ -53,9 +52,6 @@ WORKDIR /app
 
 # Copy binary from builder stage
 COPY --from=builder /app/target/release/stremio-addon /app/stremio-addon
-
-# Copy migrations
-COPY --from=builder /app/migrations /app/migrations
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
