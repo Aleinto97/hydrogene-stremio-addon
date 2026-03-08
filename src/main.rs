@@ -10,9 +10,11 @@ use tracing::{info, error};
 
 mod db;
 mod debrid;
+mod metadata;
 mod scrapers;
 
 use db::DbPool;
+use metadata::MetadataClient;
 use scrapers::{ScraperManager, ScrapedTorrent};
 
 #[derive(Clone)]
@@ -20,6 +22,7 @@ struct AppState {
     db_pool: DbPool,
     scraper_manager: Arc<ScraperManager>,
     debrid_client: Arc<debrid::RealDebridClient>,
+    metadata_client: Arc<MetadataClient>,
 }
 
 #[tokio::main]
@@ -44,10 +47,14 @@ async fn main() -> anyhow::Result<()> {
     // Initialize Real-Debrid client
     let debrid_client = Arc::new(debrid::RealDebridClient::new()?);
 
+    // Initialize metadata client
+    let metadata_client = Arc::new(MetadataClient::new()?);
+
     let app_state = AppState {
         db_pool,
         scraper_manager,
         debrid_client,
+        metadata_client,
     };
 
     // Build router
@@ -149,17 +156,61 @@ async fn stream_handler(
             vec![]
         }
     } else {
-        info!("Cache miss for {}, scraping...", id);
+        info!("Cache miss for {}, looking up metadata...", id);
         
-        // Scrape from all sources
-        let scraped = state.scraper_manager.scrape_all(&id, &content_type).await;
+        // Lookup metadata to get title
+        let metadata = match state.metadata_client.lookup_by_imdb(&id, &content_type).await {
+            Ok(meta) => {
+                info!("Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
+                meta
+            }
+            Err(e) => {
+                error!("Failed to lookup metadata for {}: {}", id, e);
+                // Fallback: use ID as search query
+                metadata::ContentMetadata {
+                    title: id.clone(),
+                    year: None,
+                    content_type: content_type.clone(),
+                    search_queries: vec![id.clone()],
+                }
+            }
+        };
+
+        // Try scraping with different search queries
+        let mut all_torrents = Vec::new();
+        
+        for query in &metadata.search_queries {
+            info!("Scraping for query: {}", query);
+            let scraped = state.scraper_manager.scrape_all(query, &content_type).await;
+            all_torrents.extend(scraped);
+            
+            // If we got results, stop trying other queries
+            if !all_torrents.is_empty() {
+                break;
+            }
+            
+            // Small delay between queries to avoid rate limiting
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        
+        // Remove duplicates and sort
+        use std::collections::HashSet;
+        let mut seen_hashes = HashSet::new();
+        let mut unique: Vec<ScrapedTorrent> = all_torrents
+            .into_iter()
+            .filter(|t| seen_hashes.insert(t.info_hash.clone()))
+            .collect();
+        
+        unique.sort_by(|a, b| b.seeders.cmp(&a.seeders));
+        unique.truncate(50); // Keep top 50
         
         // Save to cache
-        if let Err(e) = db::cache_torrents(&state.db_pool, &id, &scraped).await {
+        if let Err(e) = db::cache_torrents(&state.db_pool, &id, &unique).await {
             error!("Failed to cache torrents: {}", e);
         }
         
-        scraped
+        info!("Found {} unique torrents for {}", unique.len(), id);
+        unique
     };
 
     // Convert to Stremio streams
@@ -168,11 +219,12 @@ async fn stream_handler(
         .map(|t| Stream {
             name: format!("🎬 {} ({} peers)", t.title, t.seeders + t.leechers),
             description: format!(
-                "📦 {:.2} GB | ⬆ {} ⬇ {} | 🏷 {}",
+                "📦 {:.2} GB | ⬆ {} ⬇ {} | 🏷 {} | 🔍 {}",
                 t.size_gb,
                 t.seeders,
                 t.leechers,
-                t.source
+                t.source,
+                id
             ),
             info_hash: Some(t.info_hash.clone()),
             url: Some(format!("/resolve/{}", t.info_hash)),
