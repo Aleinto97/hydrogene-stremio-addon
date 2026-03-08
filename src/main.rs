@@ -143,28 +143,47 @@ async fn stream_handler(
     State(state): State<AppState>,
     Path((content_type, id)): Path<(String, String)>,
 ) -> Json<StreamResponse> {
+    eprintln!("DEBUG: Stream request: type={}, id={}", content_type, id);
     info!("Stream request: type={}, id={}", content_type, id);
 
     // Try to get from cache first
-    let cached = db::get_cached_torrents(&state.db_pool, &id).await.ok();
+    let cached = match db::get_cached_torrents(&state.db_pool, &id).await {
+        Ok(t) => {
+            eprintln!("DEBUG: Cache query successful, {} torrents", t.len());
+            Some(t)
+        }
+        Err(e) => {
+            eprintln!("DEBUG: Cache query failed: {}", e);
+            None
+        }
+    };
     
     let torrents = if let Some(cached_torrents) = cached {
         if !cached_torrents.is_empty() {
+            eprintln!("DEBUG: Cache hit for {}", id);
             info!("Cache hit for {}", id);
             cached_torrents
         } else {
+            eprintln!("DEBUG: Cache empty for {}", id);
             vec![]
         }
     } else {
+        eprintln!("DEBUG: Cache miss for {}, looking up metadata...", id);
         info!("Cache miss for {}, looking up metadata...", id);
+        
+        // Check if TMDB key is configured
+        let tmdb_key = std::env::var("TMDB_API_KEY").ok();
+        eprintln!("DEBUG: TMDB_API_KEY present: {}", tmdb_key.is_some());
         
         // Lookup metadata to get title
         let metadata = match state.metadata_client.lookup_by_imdb(&id, &content_type).await {
             Ok(meta) => {
+                eprintln!("DEBUG: Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
                 info!("Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
                 meta
             }
             Err(e) => {
+                eprintln!("DEBUG: Failed to lookup metadata for {}: {}", id, e);
                 error!("Failed to lookup metadata for {}: {}", id, e);
                 // Fallback: use ID as search query
                 metadata::ContentMetadata {
@@ -179,9 +198,12 @@ async fn stream_handler(
         // Try scraping with different search queries
         let mut all_torrents = Vec::new();
         
+        eprintln!("DEBUG: Will try {} queries", metadata.search_queries.len());
         for query in &metadata.search_queries {
+            eprintln!("DEBUG: Scraping for query: {}", query);
             info!("Scraping for query: {}", query);
             let scraped = state.scraper_manager.scrape_all(query, &content_type).await;
+            eprintln!("DEBUG: Scraped {} torrents for query {}", scraped.len(), query);
             all_torrents.extend(scraped);
             
             // If we got results, stop trying other queries
@@ -206,9 +228,11 @@ async fn stream_handler(
         
         // Save to cache
         if let Err(e) = db::cache_torrents(&state.db_pool, &id, &unique).await {
+            eprintln!("DEBUG: Failed to cache torrents: {}", e);
             error!("Failed to cache torrents: {}", e);
         }
         
+        eprintln!("DEBUG: Found {} unique torrents for {}", unique.len(), id);
         info!("Found {} unique torrents for {}", unique.len(), id);
         unique
     };
