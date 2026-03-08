@@ -76,7 +76,7 @@ impl RealDebridClient {
         let torrent_id = self.add_magnet(&magnet).await?;
         info!("Magnet added, torrent ID: {}", torrent_id);
         
-        // Step 2: Get torrent info and wait for metadata
+        // Step 2: Get torrent info and wait for metadata (max 60 seconds)
         let torrent_info = self.wait_for_metadata(&torrent_id).await?;
         info!("Torrent metadata received: {} files", torrent_info.files.len());
         
@@ -86,7 +86,8 @@ impl RealDebridClient {
         
         self.select_files(&torrent_id, &main_video_id.to_string()).await?;
         
-        // Step 4: Wait for download to complete
+        // Step 4: Wait for download to complete (no timeout limit)
+        info!("Waiting for download to complete...");
         let completed_info = self.wait_for_download(&torrent_id).await?;
         info!("Torrent ready, {} links available", completed_info.links.len());
         
@@ -224,8 +225,8 @@ impl RealDebridClient {
 
     async fn wait_for_download(&self, torrent_id: &str) -> Result<RDTorrentInfo> {
         let mut attempts = 0;
-        let max_attempts = 300; // 5 minutes max for large files
-
+        let check_interval = 5; // Check every 5 seconds
+        
         loop {
             let info = self.get_torrent_info(torrent_id).await?;
             
@@ -237,12 +238,14 @@ impl RealDebridClient {
                     return Err(anyhow!("Torrent download error"));
                 }
                 _ => {
-                    debug!("Torrent status: {}, progress: {}%", info.status, info.progress);
                     attempts += 1;
-                    if attempts >= max_attempts {
-                        return Err(anyhow!("Timeout waiting for download"));
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    let progress = info.progress;
+                    let status = &info.status;
+                    info!("Torrent {} status: {} ({}% complete, attempt {})", 
+                          torrent_id, status, progress, attempts);
+                    
+                    // Check every 5 seconds regardless of status
+                    tokio::time::sleep(tokio::time::Duration::from_secs(check_interval)).await;
                 }
             }
         }

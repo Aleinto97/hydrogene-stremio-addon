@@ -92,12 +92,12 @@ async fn timeout_middleware(
 ) -> axum::response::Response {
     let uri = req.uri().to_string();
     
-    // Skip timeout for health checks and manifest
-    if uri == "/" || uri == "/manifest.json" {
+    // Skip timeout for health checks, manifest, and resolve endpoint
+    if uri == "/" || uri == "/manifest.json" || uri.starts_with("/resolve/") {
         return next.run(req).await;
     }
     
-    // Apply 15 second timeout for stream requests
+    // Apply 15 second timeout for stream requests only
     match tokio::time::timeout(
         std::time::Duration::from_secs(15),
         next.run(req)
@@ -308,24 +308,126 @@ async fn stream_handler(
     let base_url = std::env::var("BASE_URL")
         .unwrap_or_else(|_| "http://torrentio-stack-aleinto97-54335f00.koyeb.app".to_string());
     
-    let streams: Vec<Stream> = torrents
+    // Parse the ID to extract season and episode for series
+    let (target_season, target_episode) = if id.contains(':') && !id.starts_with("kitsu:") {
+        let parts: Vec<&str> = id.split(':').collect();
+        if parts.len() >= 3 {
+            let season = parts[1].parse::<u32>().ok();
+            let episode = parts[2].parse::<u32>().ok();
+            (season, episode)
+        } else {
+            (None, None)
+        }
+    } else if id.starts_with("kitsu:") {
+        // For anime, extract from kitsu ID - but we don't have season/ep info
+        (None, None)
+    } else {
+        (None, None)
+    };
+
+    // Filter torrents by quality (only 1080p, 2160p, 4K, UHD), minimum seeders, and season/episode matching
+    let min_seeders: i32 = std::env::var("MIN_SEEDERS")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse()
+        .unwrap_or(1);
+    
+    let filtered_torrents: Vec<ScrapedTorrent> = torrents
         .into_iter()
-        .map(|t| Stream {
-            name: format!("🎬 {} ({} peers)", t.title, t.seeders + t.leechers),
-            description: format!(
-                "📦 {:.2} GB | ⬆ {} ⬇ {} | 🏷 {} | 🔍 {}",
-                t.size_gb,
-                t.seeders,
-                t.leechers,
-                t.source,
-                id
-            ),
-            info_hash: Some(t.info_hash.clone()),
-            url: Some(format!("{}/resolve/{}", base_url, t.info_hash)),
-            behavior_hints: serde_json::json!({
-                "bingeGroup": "torrent-".to_string() + &t.source,
-                "filename": t.title
-            }),
+        .filter(|t| t.seeders >= min_seeders) // Filter out dead torrents
+        .filter(|t| {
+            let title_upper = t.title.to_uppercase();
+            // Only allow 1080p, 2160p, 4K, UHD
+            let has_1080p = title_upper.contains("1080P");
+            let has_2160p = title_upper.contains("2160P");
+            let has_4k = title_upper.contains("4K") || title_upper.contains("UHD");
+            has_1080p || has_2160p || has_4k
+        })
+        .filter(|t| {
+            // Filter by season/episode if we have target info
+            if let (Some(target_season), Some(target_episode)) = (target_season, target_episode) {
+                let title_upper = t.title.to_uppercase();
+                
+                // Check for exact season/episode match
+                let s_pattern = format!("S{:02}E{:02}", target_season, target_episode);
+                let s_pattern_alt = format!("S{}E{}", target_season, target_episode);
+                let s_pattern_alt2 = format!("S{:02}E{}", target_season, target_episode);
+                let s_pattern_alt3 = format!("S{}E{:02}", target_season, target_episode);
+                
+                // Also check for season-only torrents (full season packs should be excluded for specific episode requests)
+                let season_only_pattern = format!("S{:02}", target_season);
+                let season_only_pattern_alt = format!("SEASON {}", target_season);
+                
+                let has_exact_episode = title_upper.contains(&s_pattern) ||
+                                        title_upper.contains(&s_pattern_alt) ||
+                                        title_upper.contains(&s_pattern_alt2) ||
+                                        title_upper.contains(&s_pattern_alt3);
+                
+                // Exclude season packs when looking for specific episode
+                let is_season_pack = (title_upper.contains(&season_only_pattern) || 
+                                     title_upper.contains(&season_only_pattern_alt)) &&
+                                     !has_exact_episode;
+                
+                has_exact_episode && !is_season_pack
+            } else {
+                true // No specific season/episode, include all
+            }
+        })
+        .collect();
+
+    // Sort by quality first (4K > 1080p), then by seeders (most seeders first)
+    let mut sorted_torrents = filtered_torrents;
+    sorted_torrents.sort_by(|a, b| {
+        // First by quality priority (2160p/4K > 1080p)
+        let a_title = a.title.to_uppercase();
+        let b_title = b.title.to_uppercase();
+        let a_is_4k = a_title.contains("2160P") || a_title.contains("4K") || a_title.contains("UHD");
+        let b_is_4k = b_title.contains("2160P") || b_title.contains("4K") || b_title.contains("UHD");
+        
+        match (a_is_4k, b_is_4k) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => b.seeders.cmp(&a.seeders) // Then by seeders (most first)
+        }
+    });
+
+    // Keep top 20 results
+    sorted_torrents.truncate(20);
+
+    let streams: Vec<Stream> = sorted_torrents
+        .into_iter()
+        .map(|t| {
+            let title_upper = t.title.to_uppercase();
+            let quality = if title_upper.contains("2160P") || title_upper.contains("4K") || title_upper.contains("UHD") {
+                "🎬 4K"
+            } else if title_upper.contains("1080P") {
+                "🎬 1080p"
+            } else {
+                "🎬 HD"
+            };
+            
+            // Extract release group from title
+            let release_group = t.title.split('-')
+                .last()
+                .map(|s| s.trim())
+                .unwrap_or("Unknown");
+            
+            // Format size nicely
+            let size_str = if t.size_gb >= 10.0 {
+                format!("{:.1} GB", t.size_gb)
+            } else {
+                format!("{:.2} GB", t.size_gb)
+            };
+            
+            Stream {
+                name: format!("{} | {} | {}", quality, release_group, size_str),
+                description: format!("⬆ {} ⬇ {} • {}", t.seeders, t.leechers, t.source),
+                info_hash: Some(t.info_hash.clone()),
+                url: Some(format!("{}/resolve/{}", base_url, t.info_hash)),
+                behavior_hints: serde_json::json!({
+                    "bingeGroup": "torrent-".to_string() + &t.source,
+                    "filename": t.title
+                }),
+            }
         })
         .collect();
 
