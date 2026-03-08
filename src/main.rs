@@ -382,11 +382,6 @@ async fn stream_handler(
             eprintln!("DEBUG: Scraped {} torrents for query {}", scraped.len(), query);
             all_torrents.extend(scraped);
             
-            // If we got results, stop trying other queries
-            if !all_torrents.is_empty() {
-                break;
-            }
-            
             // Small delay between queries to avoid rate limiting
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
