@@ -97,25 +97,43 @@ impl MetadataClient {
         // Handle Kitsu anime IDs first
         if imdb_id.starts_with("kitsu:") {
             let kitsu_id = imdb_id.replace("kitsu:", "");
-            tracing::info!("Detected Kitsu ID: {}, looking up anime title", kitsu_id);
+            tracing::info!("Detected Kitsu ID: {}, attempting lookup", kitsu_id);
             
-            // Try to lookup from Kitsu API
+            // Try Kitsu API first
             match self.lookup_kitsu(&kitsu_id).await {
                 Ok(metadata) => {
-                    tracing::info!("Kitsu lookup successful: {} queries generated", metadata.search_queries.len());
-                    return Ok(metadata);
+                    tracing::info!("Kitsu lookup successful with {} queries", metadata.search_queries.len());
+                    if !metadata.search_queries.is_empty() {
+                        return Ok(metadata);
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!("Kitsu lookup failed for {}: {}, falling back to ID", kitsu_id, e);
+                    tracing::warn!("Kitsu lookup failed: {}, will try alternatives", e);
                 }
             }
             
-            // Fallback: use ID as search query if lookup fails
+            // Fallback 1: Try TMDB with the kitsu_id (some anime have IMDB entries)
+            if let Some(ref api_key) = self.tmdb_api_key {
+                // Try searching TMDB directly with "anime [id]"
+                let search_query = format!("anime {}", kitsu_id);
+                if let Ok(results) = self.search_tmdb(&search_query, "tv", api_key).await {
+                    if let Some(first) = results.first() {
+                        tracing::info!("Found anime via TMDB search: {}", first.title);
+                        return Ok(first.clone());
+                    }
+                }
+            }
+            
+            // Fallback 2: Use ID with common anime terms
+            tracing::info!("Using Kitsu ID with generic search terms as fallback");
             return Ok(ContentMetadata {
-                title: kitsu_id.clone(),
+                title: format!("Kitsu {}", kitsu_id),
                 year: None,
                 content_type: "series".to_string(),
-                search_queries: vec![kitsu_id],
+                search_queries: vec![
+                    kitsu_id.clone(),
+                    format!("{} anime", kitsu_id),
+                ],
             });
         }
 
