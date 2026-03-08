@@ -1,9 +1,29 @@
+# Koyeb deployment configuration
+# Uses Buildpack with custom build command for Rust
+
 name: hydrogene
 
-# Use pre-built image from GitHub Container Registry
 builder:
-  type: image
-  image: ghcr.io/aleinto97/hydrogene:latest
+  type: buildpack
+  build-command: |
+    # Install Rust
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.80.0
+    source $HOME/.cargo/env
+    
+    # Install dependencies
+    apt-get update && apt-get install -y pkg-config libssl-dev libpq-dev
+    
+    # Build release binary
+    cargo build --release --locked
+    
+    # Move binary to expected location
+    mkdir -p /app/bin
+    cp target/release/stremio-addon /app/bin/
+    
+    # Make executable
+    chmod +x /app/bin/stremio-addon
+
+  run-command: /app/bin/stremio-addon
 
 ports:
   - port: 8080
@@ -13,7 +33,7 @@ healthchecks:
   - protocol: http
     port: 8080
     path: /
-    initial_delay: 10s
+    initial_delay: 15s
     interval: 30s
     timeout: 5s
     healthy_threshold: 1
