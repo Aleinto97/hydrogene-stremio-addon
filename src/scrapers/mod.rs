@@ -8,6 +8,7 @@ pub mod tpb;
 pub mod rutor;
 pub mod rutracker;
 pub mod watchsomuch;
+pub mod x1337;
 
 #[derive(Debug, Clone)]
 pub struct ScrapedTorrent {
@@ -40,6 +41,7 @@ impl ScraperManager {
         let scrapers: Vec<Box<dyn Scraper>> = vec![
             Box::new(nyaa::NyaaScraper::new()?),
             Box::new(tpb::TPBScraper::new()?),
+            Box::new(x1337::X1337Scraper::new()?),
             Box::new(rutor::RutorScraper::new()?),
             Box::new(rutracker::RuTrackerScraper::new()?),
             Box::new(watchsomuch::WatchSoMuchScraper::new()?),

@@ -22,8 +22,9 @@ reqwest = { version = "0.11", default-features = false, features = [
     "json"
 ] }
 
-# HTML Parsing
+# HTML/XML Parsing
 scraper = "0.18"
+quick-xml = { version = "0.31", features = ["serialize"] }
 
 # Database
 sqlx = { version = "0.7", features = [
