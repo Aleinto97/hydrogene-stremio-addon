@@ -356,6 +356,7 @@ async fn stream_handler(
         eprintln!("DEBUG: TMDB_API_KEY present: {}", tmdb_key.is_some());
         
         // Determine search queries based on ID type
+        eprintln!("DEBUG: Checking ID type - is_anime={}, starts_with_tt={}, metadata_id={}", is_anime, metadata_id.starts_with("tt"), metadata_id);
         let search_queries: Vec<String> = if !is_anime && !metadata_id.starts_with("tt") {
             // For direct title searches (not IMDB, not Kitsu)
             eprintln!("DEBUG: Using direct title search: {}", metadata_id);
