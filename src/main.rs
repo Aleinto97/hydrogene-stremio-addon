@@ -143,6 +143,9 @@ async fn stream_handler(
     State(state): State<AppState>,
     Path((content_type, id)): Path<(String, String)>,
 ) -> Json<StreamResponse> {
+    // Strip .json extension if present
+    let id = id.trim_end_matches(".json").to_string();
+    
     eprintln!("DEBUG: Stream request: type={}, id={}", content_type, id);
     info!("Stream request: type={}, id={}", content_type, id);
 
