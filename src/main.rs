@@ -239,6 +239,50 @@ fn extract_release_group(title: &str) -> String {
         .unwrap_or_else(|| "Unknown".to_string())
 }
 
+// Parse title to extract season and episode information
+// Supports formats like: "Attack on Titan S01E01", "Show - Season 1 Episode 2", "Anime - 01"
+fn parse_title_for_episode(title: &str) -> (String, Option<u32>, Option<u32>) {
+    let title_upper = title.to_uppercase();
+    
+    // Pattern 1: S01E01, S1E1, Season 1 Episode 1
+    let season_episode_regex = regex::Regex::new(r"S(\d{1,2})E(\d{1,3})").unwrap();
+    if let Some(caps) = season_episode_regex.captures(&title_upper) {
+        let season = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let episode = caps.get(2).and_then(|m| m.as_str().parse().ok());
+        let clean_title = season_episode_regex.replace(title, "").to_string();
+        return (clean_title.trim().to_string(), season, episode);
+    }
+    
+    // Pattern 2: Season X Episode Y
+    let season_text_regex = regex::Regex::new(r"SEASON\s+(\d+).*?EPISODE\s+(\d+)").unwrap();
+    if let Some(caps) = season_text_regex.captures(&title_upper) {
+        let season = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let episode = caps.get(2).and_then(|m| m.as_str().parse().ok());
+        let clean_title = season_text_regex.replace(title, "").to_string();
+        return (clean_title.trim().to_string(), season, episode);
+    }
+    
+    // Pattern 3: Just Episode number at end (common for anime)
+    // "Attack on Titan - 01" or "Anime Episode 05"
+    let ep_only_regex = regex::Regex::new(r"(?:EPISODE\s+|E|EP|\s-\s)(\d{1,3})$").unwrap();
+    if let Some(caps) = ep_only_regex.captures(&title_upper) {
+        let episode = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let clean_title = ep_only_regex.replace(title, "").to_string();
+        return (clean_title.trim().to_string(), None, episode);
+    }
+    
+    // Pattern 4: Just season
+    let season_only_regex = regex::Regex::new(r"S(?:EASON\s+)?(\d{1,2})").unwrap();
+    if let Some(caps) = season_only_regex.captures(&title_upper) {
+        let season = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let clean_title = season_only_regex.replace(title, "").to_string();
+        return (clean_title.trim().to_string(), season, None);
+    }
+    
+    // No patterns matched, return original title
+    (title.to_string(), None, None)
+}
+
 async fn stream_handler(
     State(state): State<AppState>,
     Path((content_type, id)): Path<(String, String)>,
@@ -304,35 +348,67 @@ async fn stream_handler(
             info!("Processing anime request with Kitsu ID: {}", metadata_id);
         }
         
+        // Parse title for season/episode info (e.g., "Attack on Titan S01E01" or "Attack on Titan - Episode 1")
+        let (parsed_title, parsed_season, parsed_episode) = parse_title_for_episode(&metadata_id);
+        
         // Check if TMDB key is configured
         let tmdb_key = std::env::var("TMDB_API_KEY").ok();
         eprintln!("DEBUG: TMDB_API_KEY present: {}", tmdb_key.is_some());
         
-        // Lookup metadata to get title (use metadata_id for series episodes)
-        let metadata = match state.metadata_client.lookup_by_imdb(&metadata_id, &content_type).await {
-            Ok(meta) => {
-                eprintln!("DEBUG: Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
-                info!("Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
-                meta
+        // Determine search queries based on ID type
+        let search_queries: Vec<String> = if !is_anime && !metadata_id.starts_with("tt") {
+            // For direct title searches (not IMDB, not Kitsu)
+            eprintln!("DEBUG: Using direct title search: {}", metadata_id);
+            
+            let mut queries = vec![metadata_id.clone()];
+            
+            // If we parsed season/episode from title, add specific queries
+            if let (Some(season), Some(episode)) = (parsed_season, parsed_episode) {
+                // Query with SXXEYY format
+                let sxxeyy_query = format!("{} S{:02}E{:02}", parsed_title, season, episode);
+                queries.push(sxxeyy_query);
+                
+                // Query with Season X Episode Y format
+                let season_ep_query = format!("{} Season {} Episode {}", parsed_title, season, episode);
+                queries.push(season_ep_query);
+                
+                // Query with just season for pack torrents
+                let season_pack_query = format!("{} S{:02}", parsed_title, season);
+                queries.push(season_pack_query);
+                
+                eprintln!("DEBUG: Parsed S{:02}E{:02} from title, added {} queries", season, episode, queries.len());
+            } else if let Some(season) = parsed_season {
+                // Only season info available
+                let season_query = format!("{} S{:02}", parsed_title, season);
+                queries.push(season_query);
+                let season_text_query = format!("{} Season {}", parsed_title, season);
+                queries.push(season_text_query);
             }
-            Err(e) => {
-                eprintln!("DEBUG: Failed to lookup metadata for {}: {}", id, e);
-                error!("Failed to lookup metadata for {}: {}", id, e);
-                // Fallback: use ID as search query
-                metadata::ContentMetadata {
-                    title: id.clone(),
-                    year: None,
-                    content_type: content_type.clone(),
-                    search_queries: vec![id.clone()],
+            
+            queries
+        } else {
+            // Lookup metadata to get title (use metadata_id for series episodes)
+            let metadata = match state.metadata_client.lookup_by_imdb(&metadata_id, &content_type).await {
+                Ok(meta) => {
+                    eprintln!("DEBUG: Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
+                    info!("Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
+                    meta.search_queries.clone()
                 }
-            }
+                Err(e) => {
+                    eprintln!("DEBUG: Failed to lookup metadata for {}: {}", id, e);
+                    error!("Failed to lookup metadata for {}: {}", id, e);
+                    // Fallback: use ID as search query
+                    vec![id.clone()]
+                }
+            };
+            metadata
         };
 
         // Try scraping with different search queries
         let mut all_torrents = Vec::new();
         
-        eprintln!("DEBUG: Will try {} queries", metadata.search_queries.len());
-        for query in &metadata.search_queries {
+        eprintln!("DEBUG: Will try {} queries", search_queries.len());
+        for query in &search_queries {
             eprintln!("DEBUG: Scraping for query: {}", query);
             info!("Scraping for query: {}", query);
             let scraped = state.scraper_manager.scrape_all(query, &content_type).await;

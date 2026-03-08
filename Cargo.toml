@@ -56,6 +56,9 @@ url = "2.5"
 urlencoding = "2.1"
 percent-encoding = "2.3"
 
+# Regex for parsing
+regex = "1.10"
+
 [profile.release]
 opt-level = 3
 lto = true
