@@ -245,6 +245,10 @@ async fn stream_handler(
         eprintln!("DEBUG: Found {} unique torrents for {}", unique.len(), id);
         info!("Found {} unique torrents for {}", unique.len(), id);
         unique
+    } else {
+        // If we have cached torrents, use them
+        eprintln!("DEBUG: Using {} cached torrents", torrents.len());
+        torrents
     };
 
     // Convert to Stremio streams
