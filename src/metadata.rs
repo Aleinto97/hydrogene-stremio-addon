@@ -96,11 +96,15 @@ impl MetadataClient {
     }
 
     pub async fn lookup_by_imdb(&self, imdb_id: &str, content_type: &str) -> Result<ContentMetadata> {
+        // DEBUG: Log every call
+        eprintln!("DEBUG: lookup_by_imdb called with id={}, type={}", imdb_id, content_type);
+        
         // Handle Kitsu/AniList anime IDs
         if imdb_id.starts_with("kitsu:") || imdb_id.starts_with("anilist:") {
             let anime_id = imdb_id
                 .replace("kitsu:", "")
                 .replace("anilist:", "");
+            eprintln!("DEBUG: Detected Anime ID: {}, attempting AniList lookup", anime_id);
             tracing::info!("Detected Anime ID: {}, attempting AniList lookup", anime_id);
             
             // Try AniList GraphQL API (faster and more reliable than Kitsu)
