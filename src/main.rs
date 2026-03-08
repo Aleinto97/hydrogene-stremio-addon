@@ -176,6 +176,69 @@ struct Stream {
     behavior_hints: serde_json::Value,
 }
 
+// Extract release group from torrent title
+// Handles patterns like [Group], -Group, .Group, or Group at end
+fn extract_release_group(title: &str) -> String {
+    let title_upper = title.to_uppercase();
+    
+    // Try bracket pattern first: [Group]
+    if let Some(start) = title.find('[') {
+        if let Some(end) = title[start..].find(']') {
+            let group = &title[start+1..start+end];
+            if !group.is_empty() && group.len() < 30 {
+                return group.to_string();
+            }
+        }
+    }
+    
+    // Try dash pattern: -Group or _Group
+    if let Some(dash_pos) = title.rfind('-') {
+        if dash_pos > 0 && dash_pos < title.len() - 1 {
+            let after_dash = &title[dash_pos+1..];
+            // Check if there's another dash, take the last part
+            if let Some(second_dash) = after_dash.rfind('-') {
+                let group = &after_dash[second_dash+1..];
+                if !group.is_empty() && group.len() < 30 && !group.contains('.') {
+                    return group.trim().to_string();
+                }
+            }
+            let group = after_dash.trim();
+            if !group.is_empty() && group.len() < 30 && !group.contains('.') {
+                return group.to_string();
+            }
+        }
+    }
+    
+    // Try underscore pattern: _Group
+    if let Some(underscore_pos) = title.rfind('_') {
+        if underscore_pos > 0 && underscore_pos < title.len() - 1 {
+            let group = &title[underscore_pos+1..];
+            if !group.is_empty() && group.len() < 30 && !group.contains('.') {
+                return group.trim().to_string();
+            }
+        }
+    }
+    
+    // Try period pattern for last segment: .Group
+    let parts: Vec<&str> = title.split('.').collect();
+    if parts.len() > 1 {
+        let last = parts.last().unwrap();
+        // Check if last part looks like a release group (not a file extension)
+        let extensions = ["MKV", "MP4", "AVI", "TS", "WMV", "MOV", "FLV", "WEBM"];
+        if !extensions.contains(&last.to_uppercase().as_str()) && 
+           last.len() > 1 && last.len() < 30 {
+            return last.to_string();
+        }
+    }
+    
+    // Default fallback - try to get last word
+    title.split_whitespace()
+        .last()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.len() < 30)
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
 async fn stream_handler(
     State(state): State<AppState>,
     Path((content_type, id)): Path<(String, String)>,
@@ -405,30 +468,143 @@ async fn stream_handler(
         .into_iter()
         .map(|t| {
             let title_upper = t.title.to_uppercase();
-            let quality = if title_upper.contains("2160P") || title_upper.contains("4K") || title_upper.contains("UHD") {
-                "🎬 4K"
+            
+            // Extract resolution with quality icons
+            let resolution = if title_upper.contains("2160P") || title_upper.contains("4K") || title_upper.contains("UHD") {
+                "4K"
             } else if title_upper.contains("1080P") {
-                "🎬 1080p"
+                "1080p"
+            } else if title_upper.contains("720P") {
+                "720p"
+            } else if title_upper.contains("480P") {
+                "480p"
             } else {
-                "🎬 HD"
+                "SD"
             };
             
-            // Extract release group from title
-            let release_group = t.title.split('-')
-                .last()
-                .map(|s| s.trim())
-                .unwrap_or("Unknown");
+            // Extract HDR/Dolby Vision info
+            let mut hdr_info = Vec::new();
+            if title_upper.contains("DV") || title_upper.contains("DOBY VISION") || title_upper.contains("DOVI") {
+                hdr_info.push("DV");
+            }
+            if title_upper.contains("HDR10+") || title_upper.contains("HDR10PLUS") {
+                hdr_info.push("HDR10+");
+            } else if title_upper.contains("HDR10") {
+                hdr_info.push("HDR10");
+            } else if title_upper.contains("HDR") {
+                hdr_info.push("HDR");
+            }
+            if title_upper.contains("HLG") {
+                hdr_info.push("HLG");
+            }
+            
+            // Extract codec/encode format
+            let mut codec = String::new();
+            if title_upper.contains("X265") || title_upper.contains("HEVC") || title_upper.contains("H.265") || title_upper.contains("H265") {
+                codec = "x265".to_string();
+            } else if title_upper.contains("X264") || title_upper.contains("AVC") || title_upper.contains("H.264") || title_upper.contains("H264") {
+                codec = "x264".to_string();
+            } else if title_upper.contains("AV1") {
+                codec = "AV1".to_string();
+            } else if title_upper.contains("VP9") {
+                codec = "VP9".to_string();
+            }
+            
+            // Extract source type
+            let mut source = String::new();
+            if title_upper.contains("WEB-DL") || title_upper.contains("WEBDL") {
+                source = "WEB-DL".to_string();
+            } else if title_upper.contains("WEBRIP") || title_upper.contains("WEB-RIP") {
+                source = "WEB-Rip".to_string();
+            } else if title_upper.contains("BLURAY") || title_upper.contains("BLU-RAY") {
+                source = "BluRay".to_string();
+            } else if title_upper.contains("BDRIP") || title_upper.contains("BD-RIP") {
+                source = "BDRip".to_string();
+            } else if title_upper.contains("HDTV") {
+                source = "HDTV".to_string();
+            } else if title_upper.contains("HDCAM") || title_upper.contains("HD-CAM") {
+                source = "HDCAM".to_string();
+            } else if title_upper.contains("DVD") || title_upper.contains("DVDRIP") {
+                source = "DVD".to_string();
+            } else if title_upper.contains("CAM") {
+                source = "CAM".to_string();
+            } else if title_upper.contains("TS") || title_upper.contains("TELESYNC") {
+                source = "TS".to_string();
+            } else if title_upper.contains("TC") || title_upper.contains("TELECINE") {
+                source = "TC".to_string();
+            } else if title_upper.contains("SCR") || title_upper.contains("SCREENER") {
+                source = "SCR".to_string();
+            }
+            
+            // Extract release group (handles [Group], -Group patterns)
+            let release_group = extract_release_group(&t.title);
+            
+            // Extract container format
+            let mut container = String::new();
+            if title_upper.contains("MKV") {
+                container = "MKV".to_string();
+            } else if title_upper.contains("MP4") {
+                container = "MP4".to_string();
+            } else if title_upper.contains("AVI") {
+                container = "AVI".to_string();
+            } else if title_upper.contains("TS") && !source.eq("TS") {
+                container = "TS".to_string();
+            }
+            
+            // Build quality display with HDR info
+            let quality_display = if !hdr_info.is_empty() {
+                format!("{} {}", resolution, hdr_info.join("+"))
+            } else {
+                resolution.to_string()
+            };
             
             // Format size nicely
             let size_str = if t.size_gb >= 10.0 {
                 format!("{:.1} GB", t.size_gb)
-            } else {
+            } else if t.size_gb >= 1.0 {
                 format!("{:.2} GB", t.size_gb)
+            } else {
+                format!("{:.0} MB", t.size_gb * 1024.0)
             };
             
+            // Build description parts
+            let mut desc_parts = Vec::new();
+            
+            // Seeders/Leechers with arrows
+            desc_parts.push(format!("⬆ {} ⬇ {}", t.seeders, t.leechers));
+            
+            // Codec
+            if !codec.is_empty() {
+                desc_parts.push(codec);
+            }
+            
+            // Container
+            if !container.is_empty() {
+                desc_parts.push(container);
+            }
+            
+            // Source
+            if !source.is_empty() {
+                desc_parts.push(source);
+            }
+            
+            // Add RD indicator (placeholder - will be updated when resolved)
+            desc_parts.push("RD ✓".to_string());
+            
+            // Build name with emoji icons
+            let name = format!("{} 🎬 {} | {} | 🌱 {}", 
+                quality_display, 
+                size_str, 
+                release_group,
+                t.seeders
+            );
+            
+            // Build description
+            let description = desc_parts.join(" | ");
+            
             Stream {
-                name: format!("{} | {} | {}", quality, release_group, size_str),
-                description: format!("⬆ {} ⬇ {} • {}", t.seeders, t.leechers, t.source),
+                name,
+                description,
                 info_hash: Some(t.info_hash.clone()),
                 url: Some(format!("{}/resolve/{}", base_url, t.info_hash)),
                 behavior_hints: serde_json::json!({
