@@ -97,14 +97,14 @@ async fn timeout_middleware(
         return next.run(req).await;
     }
     
-    // Apply 15 second timeout for stream requests only
+    // Apply 30 second timeout for stream requests (15s was too short for anime with Kitsu lookup + scraping)
     match tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(30),
         next.run(req)
     ).await {
         Ok(response) => response,
         Err(_) => {
-            tracing::warn!("Request timeout for {} after 15s", uri);
+            tracing::warn!("Request timeout for {} after 30s", uri);
             // Return empty streams on timeout
             let body = axum::body::Body::from(r#"{"streams": []}"#);
             axum::response::Response::builder()
@@ -233,6 +233,14 @@ async fn stream_handler(
     eprintln!("DEBUG: About to check if torrents is empty. Current len: {}", torrents.len());
     let torrents = if torrents.is_empty() {
         eprintln!("DEBUG: Entering scraping block!");
+        
+        // Special handling for anime - log it
+        let is_anime = metadata_id.starts_with("kitsu:");
+        if is_anime {
+            eprintln!("DEBUG: Anime detected! Will lookup via Kitsu API");
+            info!("Processing anime request with Kitsu ID: {}", metadata_id);
+        }
+        
         // Check if TMDB key is configured
         let tmdb_key = std::env::var("TMDB_API_KEY").ok();
         eprintln!("DEBUG: TMDB_API_KEY present: {}", tmdb_key.is_some());
