@@ -163,17 +163,24 @@ async fn stream_handler(
     
     let torrents = if let Some(cached_torrents) = cached {
         if !cached_torrents.is_empty() {
-            eprintln!("DEBUG: Cache hit for {}", id);
+            eprintln!("DEBUG: Cache hit for {} with {} torrents", id, cached_torrents.len());
             info!("Cache hit for {}", id);
             cached_torrents
         } else {
-            eprintln!("DEBUG: Cache empty for {}", id);
-            vec![]
+            eprintln!("DEBUG: Cache empty for {}, will scrape fresh", id);
+            // Continue to scraping section below
+            Vec::new() // placeholder, will be overwritten
         }
     } else {
         eprintln!("DEBUG: Cache miss for {}, looking up metadata...", id);
         info!("Cache miss for {}, looking up metadata...", id);
-        
+        Vec::new() // placeholder, will be overwritten
+    };
+    
+    // If torrents is still empty, we need to scrape
+    eprintln!("DEBUG: About to check if torrents is empty. Current len: {}", torrents.len());
+    let torrents = if torrents.is_empty() {
+        eprintln!("DEBUG: Entering scraping block!");
         // Check if TMDB key is configured
         let tmdb_key = std::env::var("TMDB_API_KEY").ok();
         eprintln!("DEBUG: TMDB_API_KEY present: {}", tmdb_key.is_some());
