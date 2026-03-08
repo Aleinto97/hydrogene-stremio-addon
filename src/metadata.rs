@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 
 const TMDB_API_BASE: &str = "https://api.themoviedb.org/3";
 const OMDB_API_BASE: &str = "http://www.omdbapi.com";
-const KITSU_API_BASE: &str = "https://kitsu.io/api/edge";
+const ANILIST_API_BASE: &str = "https://graphql.anilist.co";
 
 pub struct MetadataClient {
     client: Client,
@@ -41,32 +41,34 @@ struct OMDBResult {
     content_type: Option<String>,
 }
 
+// AniList GraphQL Response structures
 #[derive(Debug, Deserialize)]
-struct KitsuAnimeResponse {
-    data: KitsuAnimeData,
+struct AniListResponse {
+    data: AniListData,
 }
 
 #[derive(Debug, Deserialize)]
-struct KitsuAnimeData {
-    attributes: KitsuAnimeAttributes,
+struct AniListData {
+    Media: Option<AniListMedia>,
 }
 
 #[derive(Debug, Deserialize)]
-struct KitsuAnimeAttributes {
-    #[serde(rename = "canonicalTitle")]
-    canonical_title: String,
-    #[serde(rename = "titles")]
-    titles: Option<KitsuTitles>,
+struct AniListMedia {
+    id: i64,
+    title: AniListTitle,
 }
 
 #[derive(Debug, Deserialize)]
-struct KitsuTitles {
-    #[serde(rename = "en")]
-    en: Option<String>,
-    #[serde(rename = "en_jp")]
-    en_jp: Option<String>,
-    #[serde(rename = "ja_jp")]
-    ja_jp: Option<String>,
+struct AniListTitle {
+    romaji: Option<String>,
+    english: Option<String>,
+    native: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AniListQuery {
+    query: String,
+    variables: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -94,28 +96,30 @@ impl MetadataClient {
     }
 
     pub async fn lookup_by_imdb(&self, imdb_id: &str, content_type: &str) -> Result<ContentMetadata> {
-        // Handle Kitsu anime IDs first
-        if imdb_id.starts_with("kitsu:") {
-            let kitsu_id = imdb_id.replace("kitsu:", "");
-            tracing::info!("Detected Kitsu ID: {}, attempting lookup", kitsu_id);
+        // Handle Kitsu/AniList anime IDs
+        if imdb_id.starts_with("kitsu:") || imdb_id.starts_with("anilist:") {
+            let anime_id = imdb_id
+                .replace("kitsu:", "")
+                .replace("anilist:", "");
+            tracing::info!("Detected Anime ID: {}, attempting AniList lookup", anime_id);
             
-            // Try Kitsu API first
-            match self.lookup_kitsu(&kitsu_id).await {
+            // Try AniList GraphQL API (faster and more reliable than Kitsu)
+            match self.lookup_anilist(&anime_id).await {
                 Ok(metadata) => {
-                    tracing::info!("Kitsu lookup successful with {} queries", metadata.search_queries.len());
+                    tracing::info!("AniList lookup successful with {} queries", metadata.search_queries.len());
                     if !metadata.search_queries.is_empty() {
                         return Ok(metadata);
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Kitsu lookup failed: {}, will try alternatives", e);
+                    tracing::warn!("AniList lookup failed: {}, will try alternatives", e);
                 }
             }
             
-            // Fallback 1: Try TMDB with the kitsu_id (some anime have IMDB entries)
+            // Fallback 1: Try TMDB with the anime_id (some anime have IMDB entries)
             if let Some(ref api_key) = self.tmdb_api_key {
                 // Try searching TMDB directly with "anime [id]"
-                let search_query = format!("anime {}", kitsu_id);
+                let search_query = format!("anime {}", anime_id);
                 if let Ok(results) = self.search_tmdb(&search_query, "tv", api_key).await {
                     if let Some(first) = results.first() {
                         tracing::info!("Found anime via TMDB search: {}", first.title);
@@ -125,14 +129,14 @@ impl MetadataClient {
             }
             
             // Fallback 2: Use ID with common anime terms
-            tracing::info!("Using Kitsu ID with generic search terms as fallback");
+            tracing::info!("Using Anime ID with generic search terms as fallback");
             return Ok(ContentMetadata {
-                title: format!("Kitsu {}", kitsu_id),
+                title: format!("Anime {}", anime_id),
                 year: None,
                 content_type: "series".to_string(),
                 search_queries: vec![
-                    kitsu_id.clone(),
-                    format!("{} anime", kitsu_id),
+                    anime_id.clone(),
+                    format!("{} anime", anime_id),
                 ],
             });
         }
@@ -164,60 +168,113 @@ impl MetadataClient {
         Err(anyhow!("No metadata API configured and cannot parse IMDB ID: {}", imdb_id))
     }
 
-    async fn lookup_kitsu(&self, kitsu_id: &str) -> Result<ContentMetadata> {
-        let url = format!("{}/anime/{}", KITSU_API_BASE, kitsu_id);
+    async fn lookup_anilist(&self, anime_id: &str) -> Result<ContentMetadata> {
+        // Parse the ID as integer
+        let id: i32 = anime_id.parse()
+            .map_err(|e| anyhow!("Invalid AniList ID: {}", e))?;
         
-        tracing::info!("Kitsu API lookup for ID: {} - URL: {}", kitsu_id, url);
+        // GraphQL query to fetch anime by ID
+        let query = r#"
+            query ($id: Int) {
+                Media(id: $id, type: ANIME) {
+                    id
+                    title {
+                        romaji
+                        english
+                        native
+                    }
+                }
+            }
+        "#;
+        
+        let variables = serde_json::json!({
+            "id": id
+        });
+        
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": variables
+        });
+        
+        tracing::info!("AniList GraphQL lookup for ID: {}", anime_id);
         
         let response = match self.client
-            .get(&url)
-            .header("Accept", "application/vnd.api+json")
-            .header("Content-Type", "application/vnd.api+json")
+            .post(ANILIST_API_BASE)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .json(&payload)
             .send()
             .await
         {
             Ok(resp) => resp,
             Err(e) => {
-                tracing::error!("Kitsu API request failed for {}: {}", kitsu_id, e);
-                return Err(anyhow!("Kitsu API request failed: {}", e));
+                tracing::error!("AniList API request failed for {}: {}", anime_id, e);
+                return Err(anyhow!("AniList API request failed: {}", e));
             }
         };
 
         if !response.status().is_success() {
-            tracing::error!("Kitsu API returned status: {} for ID {}", response.status(), kitsu_id);
-            return Err(anyhow!("Kitsu API error: {}", response.status()));
+            tracing::error!("AniList API returned status: {} for ID {}", response.status(), anime_id);
+            return Err(anyhow!("AniList API error: {}", response.status()));
         }
 
-        let data: KitsuAnimeResponse = match response.json().await {
+        let data: AniListResponse = match response.json().await {
             Ok(d) => d,
             Err(e) => {
-                tracing::error!("Kitsu API JSON parse failed for {}: {}", kitsu_id, e);
-                return Err(anyhow!("Kitsu JSON parse error: {}", e));
+                tracing::error!("AniList API JSON parse failed for {}: {}", anime_id, e);
+                return Err(anyhow!("AniList JSON parse error: {}", e));
             }
         };
         
-        let attrs = data.data.attributes;
+        let media = data.data.Media
+            .ok_or_else(|| anyhow!("Anime not found on AniList"))?;
         
-        let canonical = attrs.canonical_title.clone();
-        let en = attrs.titles.as_ref().and_then(|t| t.en.clone());
-        let en_jp = attrs.titles.as_ref().and_then(|t| t.en_jp.clone());
-        let ja_jp = attrs.titles.as_ref().and_then(|t| t.ja_jp.clone());
+        let title = &media.title;
+        let romaji = title.romaji.clone();
+        let english = title.english.clone();
+        let native = title.native.clone();
         
-        tracing::info!("Kitsu API success for {}: canonical={}, en={:?}, en_jp={:?}", 
-                     kitsu_id, canonical, en, en_jp);
+        tracing::info!("AniList API success for {}: romaji={:?}, english={:?}, native={:?}", 
+                     anime_id, romaji, english, native);
         
         // Build search queries with all available titles
         let mut queries = vec![];
         
-        // Prefer English title, fallback to others
-        let primary_title = en.clone()
-            .or_else(|| Some(canonical.clone()))
-            .unwrap_or_default();
+        // Prefer English title, then romaji, then native
+        let primary_title = english.clone()
+            .or_else(|| romaji.clone())
+            .or_else(|| native.clone())
+            .unwrap_or_else(|| format!("Anime {}", anime_id));
         
         if !primary_title.is_empty() {
             queries.push(primary_title.clone());
         }
         
+        // Add alternative titles
+        if let Some(ref romaji) = romaji {
+            if !queries.contains(romaji) && !romaji.is_empty() {
+                queries.push(romaji.clone());
+            }
+        }
+        
+        if let Some(ref native) = native {
+            if !queries.contains(native) && !native.is_empty() {
+                queries.push(native.clone());
+            }
+        }
+        
+        // Remove canonical if we added it (AniList doesn't have canonical like Kitsu)
+        
+        tracing::info!("AniList lookup for {} generated {} queries: {:?}", 
+                     anime_id, queries.len(), queries);
+
+        Ok(ContentMetadata {
+            title: primary_title,
+            year: None,
+            content_type: "series".to_string(),
+            search_queries: queries,
+        })
+    }
         if let Some(ref en_jp) = en_jp {
             if !queries.contains(en_jp) && !en_jp.is_empty() {
                 queries.push(en_jp.clone());
