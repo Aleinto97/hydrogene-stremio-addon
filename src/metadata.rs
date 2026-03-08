@@ -97,10 +97,19 @@ impl MetadataClient {
         // Handle Kitsu anime IDs first
         if imdb_id.starts_with("kitsu:") {
             let kitsu_id = imdb_id.replace("kitsu:", "");
+            tracing::info!("Detected Kitsu ID: {}, looking up anime title", kitsu_id);
+            
             // Try to lookup from Kitsu API
-            if let Ok(metadata) = self.lookup_kitsu(&kitsu_id).await {
-                return Ok(metadata);
+            match self.lookup_kitsu(&kitsu_id).await {
+                Ok(metadata) => {
+                    tracing::info!("Kitsu lookup successful: {} queries generated", metadata.search_queries.len());
+                    return Ok(metadata);
+                }
+                Err(e) => {
+                    tracing::warn!("Kitsu lookup failed for {}: {}, falling back to ID", kitsu_id, e);
+                }
             }
+            
             // Fallback: use ID as search query if lookup fails
             return Ok(ContentMetadata {
                 title: kitsu_id.clone(),
@@ -140,24 +149,44 @@ impl MetadataClient {
     async fn lookup_kitsu(&self, kitsu_id: &str) -> Result<ContentMetadata> {
         let url = format!("{}/anime/{}", KITSU_API_BASE, kitsu_id);
         
-        let response = self.client
+        tracing::info!("Kitsu API lookup for ID: {} - URL: {}", kitsu_id, url);
+        
+        let response = match self.client
             .get(&url)
             .header("Accept", "application/vnd.api+json")
             .header("Content-Type", "application/vnd.api+json")
             .send()
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!("Kitsu API request failed for {}: {}", kitsu_id, e);
+                return Err(anyhow!("Kitsu API request failed: {}", e));
+            }
+        };
 
         if !response.status().is_success() {
+            tracing::error!("Kitsu API returned status: {} for ID {}", response.status(), kitsu_id);
             return Err(anyhow!("Kitsu API error: {}", response.status()));
         }
 
-        let data: KitsuAnimeResponse = response.json().await?;
+        let data: KitsuAnimeResponse = match response.json().await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!("Kitsu API JSON parse failed for {}: {}", kitsu_id, e);
+                return Err(anyhow!("Kitsu JSON parse error: {}", e));
+            }
+        };
+        
         let attrs = data.data.attributes;
         
         let canonical = attrs.canonical_title.clone();
         let en = attrs.titles.as_ref().and_then(|t| t.en.clone());
         let en_jp = attrs.titles.as_ref().and_then(|t| t.en_jp.clone());
         let ja_jp = attrs.titles.as_ref().and_then(|t| t.ja_jp.clone());
+        
+        tracing::info!("Kitsu API success for {}: canonical={}, en={:?}, en_jp={:?}", 
+                     kitsu_id, canonical, en, en_jp);
         
         // Build search queries with all available titles
         let mut queries = vec![];
