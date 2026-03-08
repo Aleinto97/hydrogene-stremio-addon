@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 
 const TMDB_API_BASE: &str = "https://api.themoviedb.org/3";
 const OMDB_API_BASE: &str = "http://www.omdbapi.com";
+const KITSU_API_BASE: &str = "https://kitsu.io/api/edge";
 
 pub struct MetadataClient {
     client: Client,
@@ -40,6 +41,34 @@ struct OMDBResult {
     content_type: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct KitsuAnimeResponse {
+    data: KitsuAnimeData,
+}
+
+#[derive(Debug, Deserialize)]
+struct KitsuAnimeData {
+    attributes: KitsuAnimeAttributes,
+}
+
+#[derive(Debug, Deserialize)]
+struct KitsuAnimeAttributes {
+    #[serde(rename = "canonicalTitle")]
+    canonical_title: String,
+    #[serde(rename = "titles")]
+    titles: Option<KitsuTitles>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KitsuTitles {
+    #[serde(rename = "en")]
+    en: Option<String>,
+    #[serde(rename = "en_jp")]
+    en_jp: Option<String>,
+    #[serde(rename = "ja_jp")]
+    ja_jp: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ContentMetadata {
     pub title: String,
@@ -65,6 +94,22 @@ impl MetadataClient {
     }
 
     pub async fn lookup_by_imdb(&self, imdb_id: &str, content_type: &str) -> Result<ContentMetadata> {
+        // Handle Kitsu anime IDs first
+        if imdb_id.starts_with("kitsu:") {
+            let kitsu_id = imdb_id.replace("kitsu:", "");
+            // Try to lookup from Kitsu API
+            if let Ok(metadata) = self.lookup_kitsu(&kitsu_id).await {
+                return Ok(metadata);
+            }
+            // Fallback: use ID as search query if lookup fails
+            return Ok(ContentMetadata {
+                title: kitsu_id.clone(),
+                year: None,
+                content_type: "series".to_string(),
+                search_queries: vec![kitsu_id],
+            });
+        }
+
         // Try TMDB first
         if let Some(ref api_key) = self.tmdb_api_key {
             if let Ok(metadata) = self.lookup_tmdb(imdb_id, content_type, api_key).await {
@@ -80,18 +125,6 @@ impl MetadataClient {
         }
 
         // If no API keys configured, try to parse IMDB ID patterns
-        // For anime (kitsu IDs), use as-is
-        if imdb_id.starts_with("kitsu:") {
-            let anime_name = imdb_id.replace("kitsu:", "").replace("-", " ");
-            return Ok(ContentMetadata {
-                title: anime_name.clone(),
-                year: None,
-                content_type: "series".to_string(),
-                search_queries: vec![anime_name],
-            });
-        }
-
-        // If it's already a title-like string (not just tt + numbers), use it directly
         if !imdb_id.starts_with("tt") || imdb_id.len() < 3 {
             return Ok(ContentMetadata {
                 title: imdb_id.to_string(),
@@ -102,6 +135,65 @@ impl MetadataClient {
         }
 
         Err(anyhow!("No metadata API configured and cannot parse IMDB ID: {}", imdb_id))
+    }
+
+    async fn lookup_kitsu(&self, kitsu_id: &str) -> Result<ContentMetadata> {
+        let url = format!("{}/anime/{}", KITSU_API_BASE, kitsu_id);
+        
+        let response = self.client
+            .get(&url)
+            .header("Accept", "application/vnd.api+json")
+            .header("Content-Type", "application/vnd.api+json")
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Kitsu API error: {}", response.status()));
+        }
+
+        let data: KitsuAnimeResponse = response.json().await?;
+        let attrs = data.data.attributes;
+        
+        let canonical = attrs.canonical_title.clone();
+        let en = attrs.titles.as_ref().and_then(|t| t.en.clone());
+        let en_jp = attrs.titles.as_ref().and_then(|t| t.en_jp.clone());
+        let ja_jp = attrs.titles.as_ref().and_then(|t| t.ja_jp.clone());
+        
+        // Build search queries with all available titles
+        let mut queries = vec![];
+        
+        // Prefer English title, fallback to others
+        let primary_title = en.clone()
+            .or_else(|| Some(canonical.clone()))
+            .unwrap_or_default();
+        
+        if !primary_title.is_empty() {
+            queries.push(primary_title.clone());
+        }
+        
+        if let Some(ref en_jp) = en_jp {
+            if !queries.contains(en_jp) && !en_jp.is_empty() {
+                queries.push(en_jp.clone());
+            }
+        }
+        
+        if let Some(ref ja) = ja_jp {
+            if !queries.contains(ja) && !ja.is_empty() {
+                queries.push(ja.clone());
+            }
+        }
+        
+        // Add canonical if not already in list
+        if !queries.contains(&canonical) && !canonical.is_empty() {
+            queries.push(canonical);
+        }
+
+        Ok(ContentMetadata {
+            title: primary_title,
+            year: None,
+            content_type: "series".to_string(),
+            search_queries: queries,
+        })
     }
 
     async fn lookup_tmdb(&self, imdb_id: &str, content_type: &str, api_key: &str) -> Result<ContentMetadata> {
@@ -153,8 +245,8 @@ impl MetadataClient {
                     .get("release_date")
                     .or_else(|| first.get("first_air_date"))
                     .and_then(|d| d.as_str())
-                    .and_then(|d| d.split('-').next())
-                    .map(|y| y.to_string());
+                    .map(|d| d.split('-').next().map(|y| y.to_string()))
+                    .flatten();
 
                 let original_title = first
                     .get("original_title")
