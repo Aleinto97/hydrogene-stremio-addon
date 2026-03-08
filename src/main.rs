@@ -344,27 +344,33 @@ async fn stream_handler(
     };
     
     // If torrents is still empty, we need to scrape
-    eprintln!("DEBUG: About to check if torrents is empty. Current len: {}", torrents.len());
+    eprintln!("STEP 1: Checking if torrents is empty. Current count: {}", torrents.len());
     let torrents = if torrents.is_empty() {
-        eprintln!("DEBUG: Entering scraping block!");
+        eprintln!("STEP 2: Entering scraping block - metadata_id={}", metadata_id);
         
         // Determine search queries
         let search_queries: Vec<String> = if metadata_id.starts_with("kitsu:") || metadata_id.starts_with("anilist:") {
             // --- ANIME: Use CDN/GraphQL to resolve title ---
-            eprintln!("DEBUG: Anime ID detected: {}", metadata_id);
+            eprintln!("STEP 3: ANIME BRANCH - metadata_id is anime: {}", metadata_id);
             
             // Extract episode number from ID if present (format: kitsu:ID:EP or anilist:ID:EP)
             let parts: Vec<&str> = metadata_id.split(':').collect();
+            eprintln!("STEP 4: ID parts: {:?}", parts);
+            
             let episode = if parts.len() >= 3 {
-                parts[2].parse::<u32>().ok()
+                let ep = parts[2].parse::<u32>().ok();
+                eprintln!("STEP 5: Parsed episode: {:?}", ep);
+                ep
             } else {
+                eprintln!("STEP 5: No episode in ID");
                 None
             };
             
             // Resolve anime title using CDN/GraphQL
+            eprintln!("STEP 6: Calling resolve_anime_title() for {}", metadata_id);
             match state.metadata_client.resolve_anime_title(&metadata_id).await {
                 Some(title) => {
-                    eprintln!("DEBUG: Anime resolved to title: {}", title);
+                    eprintln!("STEP 7: SUCCESS - Resolved to title: '{}'", title);
                     
                     // Build queries with episode info
                     let mut queries = vec![title.clone()];
@@ -373,13 +379,15 @@ async fn stream_handler(
                         // Add episode-specific queries
                         queries.push(format!("{} {:02}", title, ep));  // "Attack on Titan 01"
                         queries.push(format!("{} E{:02}", title, ep)); // "Attack on Titan E01"
-                        eprintln!("DEBUG: Added episode {} to queries", ep);
+                        eprintln!("STEP 8: Added episode {} queries. Total: {}", ep, queries.len());
+                    } else {
+                        eprintln!("STEP 8: No episode, using title only: {}", queries.len());
                     }
                     
                     queries
                 }
                 None => {
-                    eprintln!("DEBUG: Failed to resolve anime title, using ID fallback");
+                    eprintln!("STEP 7: FAILED - resolve_anime_title() returned None");
                     vec![metadata_id.clone()]
                 }
             }

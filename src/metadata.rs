@@ -80,31 +80,33 @@ impl MetadataClient {
     pub async fn resolve_anime_title(&self, stremio_id: &str) -> Option<String> {
         let parts: Vec<&str> = stremio_id.split(':').collect();
         
-        tracing::info!("Resolving anime title for ID: {}", stremio_id);
+        eprintln!("RESOLVE: Called with stremio_id: {}", stremio_id);
+        eprintln!("RESOLVE: Parts: {:?}", parts);
         
         match parts.as_slice() {
             // --- CASE: KITSU via Community CDN ---
             ["kitsu", id] | ["kitsu", id, _] => {
                 let url = format!("{}/meta/anime/kitsu:{}.json", KITSU_PROXY_BASE, id);
-                tracing::info!("Fetching from Kitsu CDN: {}", url);
+                eprintln!("RESOLVE: Kitsu URL: {}", url);
                 
                 match self.client.get(&url).send().await {
                     Ok(res) if res.status().is_success() => {
+                        eprintln!("RESOLVE: Kitsu response OK");
                         match res.json::<KitsuProxyResponse>().await {
                             Ok(data) => {
-                                tracing::info!("Kitsu CDN resolved: {}", data.meta.name);
+                                eprintln!("RESOLVE: Kitsu SUCCESS -> '{}'", data.meta.name);
                                 return Some(data.meta.name);
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to parse Kitsu CDN response: {}", e);
+                                eprintln!("RESOLVE: Kitsu JSON parse error: {}", e);
                             }
                         }
                     }
                     Ok(res) => {
-                        tracing::warn!("Kitsu CDN returned status: {}", res.status());
+                        eprintln!("RESOLVE: Kitsu bad status: {}", res.status());
                     }
                     Err(e) => {
-                        tracing::warn!("Kitsu CDN request failed: {}", e);
+                        eprintln!("RESOLVE: Kitsu request error: {}", e);
                     }
                 }
             }
@@ -112,7 +114,10 @@ impl MetadataClient {
             // --- CASE: ANILIST via Minimal GraphQL ---
             ["anilist", id] | ["anilist", id, _] => {
                 let anime_id = id.parse::<i32>().unwrap_or(0);
+                eprintln!("RESOLVE: AniList ID parsed: {}", anime_id);
+                
                 if anime_id == 0 {
+                    eprintln!("RESOLVE: AniList ID is 0, returning None");
                     return None;
                 }
                 
@@ -121,7 +126,7 @@ impl MetadataClient {
                     "variables": { "id": anime_id }
                 });
                 
-                tracing::info!("Fetching from AniList GraphQL for ID: {}", anime_id);
+                eprintln!("RESOLVE: AniList posting to {}", ANILIST_API_BASE);
                 
                 match self.client
                     .post(ANILIST_API_BASE)
@@ -131,38 +136,42 @@ impl MetadataClient {
                     .await
                 {
                     Ok(res) if res.status().is_success() => {
+                        eprintln!("RESOLVE: AniList response OK");
                         match res.json::<serde_json::Value>().await {
                             Ok(data) => {
+                                eprintln!("RESOLVE: AniList JSON parsed: {:?}", data["data"]["Media"]["title"]);
                                 // Try English title first, fallback to romaji
                                 let title = data["data"]["Media"]["title"]["english"]
                                     .as_str()
                                     .or_else(|| data["data"]["Media"]["title"]["romaji"].as_str());
                                 
                                 if let Some(t) = title {
-                                    tracing::info!("AniList resolved: {}", t);
+                                    eprintln!("RESOLVE: AniList SUCCESS -> '{}'", t);
                                     return Some(t.to_string());
+                                } else {
+                                    eprintln!("RESOLVE: AniList no title found in response");
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to parse AniList response: {}", e);
+                                eprintln!("RESOLVE: AniList JSON parse error: {}", e);
                             }
                         }
                     }
                     Ok(res) => {
-                        tracing::warn!("AniList returned status: {}", res.status());
+                        eprintln!("RESOLVE: AniList bad status: {}", res.status());
                     }
                     Err(e) => {
-                        tracing::warn!("AniList request failed: {}", e);
+                        eprintln!("RESOLVE: AniList request error: {}", e);
                     }
                 }
             }
             
             _ => {
-                tracing::debug!("Not an anime ID format: {}", stremio_id);
+                eprintln!("RESOLVE: Not a recognized anime ID format: {}", stremio_id);
             }
         }
         
-        tracing::warn!("Could not resolve anime title for: {}", stremio_id);
+        eprintln!("RESOLVE: Returning None for {}", stremio_id);
         None
     }
 
