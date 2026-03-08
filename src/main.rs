@@ -1,26 +1,25 @@
 use axum::{
-    routing::{get, post},
+    routing::get,
     Router,
-    extract::{Path, State, Request},
-    response::{Json, Redirect, Response},
-    middleware,
+    extract::{Path, State},
+    response::{Json, Redirect},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{info, error};
 
-mod db;
-mod debrid;
-mod metadata;
-mod scrapers;
+use hydrogene::debrid;
+use hydrogene::metadata;
+use hydrogene::scrapers;
+use hydrogene::stremio_format::{StremioFormatter, StremioStream, TorrentInfo};
+use hydrogene::utils;
+use hydrogene::ResolveResult;
 
-use db::DbPool;
 use metadata::MetadataClient;
 use scrapers::{ScraperManager, ScrapedTorrent};
 
 #[derive(Clone)]
 struct AppState {
-    db_pool: DbPool,
     scraper_manager: Arc<ScraperManager>,
     debrid_client: Arc<debrid::RealDebridClient>,
     metadata_client: Arc<MetadataClient>,
@@ -37,10 +36,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     info!("Starting Stremio Addon Server...");
-
-    // Initialize database pool
-    let db_pool = db::init_pool().await?;
-    info!("Database pool initialized");
 
     // Initialize shared HTTP client for connection pooling
     let http_client = Arc::new(reqwest::Client::builder()
@@ -59,7 +54,6 @@ async fn main() -> anyhow::Result<()> {
     let metadata_client = Arc::new(MetadataClient::new(http_client.clone())?);
 
     let app_state = AppState {
-        db_pool,
         scraper_manager,
         debrid_client,
         metadata_client,
@@ -104,14 +98,14 @@ async fn timeout_middleware(
         return next.run(req).await;
     }
     
-    // Apply 30 second timeout for stream requests (15s was too short for anime with Kitsu lookup + scraping)
+    // Apply 1 second timeout for stream requests (fast response is critical)
     match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(1),
         next.run(req)
     ).await {
         Ok(response) => response,
         Err(_) => {
-            tracing::warn!("Request timeout for {} after 30s", uri);
+            tracing::warn!("Request timeout for {} after 1s", uri);
             // Return empty streams on timeout
             let body = axum::body::Body::from(r#"{"streams": []}"#);
             axum::response::Response::builder()
@@ -158,7 +152,7 @@ async fn manifest_handler() -> Json<Manifest> {
         types: vec!["movie".to_string(), "series".to_string()],
         catalogs: vec![],
         resources: vec!["stream".to_string()],
-        id_prefixes: vec!["tt".to_string(), "kitsu".to_string()],
+        id_prefixes: vec!["tt".to_string(), "anilist".to_string()],
         behavior_hints: serde_json::json!({
             "configurable": false,
             "configurationRequired": false
@@ -168,25 +162,12 @@ async fn manifest_handler() -> Json<Manifest> {
 
 #[derive(serde::Serialize)]
 struct StreamResponse {
-    streams: Vec<Stream>,
-}
-
-#[derive(serde::Serialize)]
-struct Stream {
-    name: String,
-    description: String,
-    #[serde(rename = "infoHash")]
-    info_hash: Option<String>,
-    #[serde(rename = "url")]
-    url: Option<String>,
-    #[serde(rename = "behaviorHints")]
-    behavior_hints: serde_json::Value,
+    streams: Vec<StremioStream>,
 }
 
 // Extract release group from torrent title
 // Handles patterns like [Group], -Group, .Group, or Group at end
 fn extract_release_group(title: &str) -> String {
-    let title_upper = title.to_uppercase();
     
     // Try bracket pattern first: [Group]
     if let Some(start) = title.find('[') {
@@ -300,14 +281,14 @@ async fn stream_handler(
     // Stremio sends IDs in various formats:
     // - Movies: tt1375666
     // - Series episodes: tt0903747:1:2 (ID:season:episode)
-    // - Anime: kitsu:12345 or anilist:16498
+    // - Anime: anilist:16498
     // Extract base ID for metadata lookup
     let base_id = id.split(':').next().unwrap_or(&id).to_string();
-    let metadata_id = if id.contains(':') && !id.starts_with("kitsu:") && !id.starts_with("anilist:") {
+    let metadata_id = if id.contains(':') && !id.starts_with("anilist:") {
         // For series episodes (tt:season:episode format), use base ID (tt0903747)
         base_id.clone()
     } else {
-        // For movies and anime (kitsu: or anilist:), use full ID
+        // For movies and anime (anilist:), use full ID
         id.clone()
     };
     
@@ -315,45 +296,17 @@ async fn stream_handler(
               content_type, id, base_id, metadata_id);
     info!("Stream request: type={}, id={}", content_type, id);
 
-    // Try to get from cache first
-    let cached = match db::get_cached_torrents(&state.db_pool, &id).await {
-        Ok(t) => {
-            eprintln!("DEBUG: Cache query successful, {} torrents", t.len());
-            Some(t)
-        }
-        Err(e) => {
-            eprintln!("DEBUG: Cache query failed: {}", e);
-            None
-        }
-    };
-    
-    let torrents = if let Some(cached_torrents) = cached {
-        if !cached_torrents.is_empty() {
-            eprintln!("DEBUG: Cache hit for {} with {} torrents", id, cached_torrents.len());
-            info!("Cache hit for {}", id);
-            cached_torrents
-        } else {
-            eprintln!("DEBUG: Cache empty for {}, will scrape fresh", id);
-            // Continue to scraping section below
-            Vec::new() // placeholder, will be overwritten
-        }
-    } else {
-        eprintln!("DEBUG: Cache miss for {}, looking up metadata...", id);
-        info!("Cache miss for {}, looking up metadata...", id);
-        Vec::new() // placeholder, will be overwritten
-    };
-    
-    // If torrents is still empty, we need to scrape
-    eprintln!("STEP 1: Checking if torrents is empty. Current count: {}", torrents.len());
-    let torrents = if torrents.is_empty() {
+    // Direct search without cache checking - results returned immediately
+    eprintln!("STEP 1: Starting direct search for {}", id);
+    let torrents = {
         eprintln!("STEP 2: Entering scraping block - metadata_id={}", metadata_id);
         
         // Determine search queries
-        let search_queries: Vec<String> = if metadata_id.starts_with("kitsu:") || metadata_id.starts_with("anilist:") {
-            // --- ANIME: Use CDN/GraphQL to resolve title ---
+        let search_queries: Vec<String> = if metadata_id.starts_with("anilist:") {
+            // --- ANIME: Use GraphQL to resolve title ---
             eprintln!("STEP 3: ANIME BRANCH - metadata_id is anime: {}", metadata_id);
             
-            // Extract episode number from ID if present (format: kitsu:ID:EP or anilist:ID:EP)
+            // Extract episode number from ID if present (format: anilist:ID:EP)
             let parts: Vec<&str> = metadata_id.split(':').collect();
             eprintln!("STEP 4: ID parts: {:?}", parts);
             
@@ -366,7 +319,7 @@ async fn stream_handler(
                 None
             };
             
-            // Resolve anime title using CDN/GraphQL
+            // Resolve anime title using GraphQL
             eprintln!("STEP 6: Calling resolve_anime_title() for {}", metadata_id);
             match state.metadata_client.resolve_anime_title(&metadata_id).await {
                 Some(title) => {
@@ -393,9 +346,16 @@ async fn stream_handler(
             }
         } else if metadata_id.starts_with("tt") {
             // --- MOVIES/SERIES: Use TMDB ---
-            eprintln!("DEBUG: IMDB ID detected: {}", metadata_id);
+            // Pass full ID including season:episode for series (format: tt1234567:1:3)
+            let full_metadata_id = if id.contains(':') && !id.starts_with("anilist:") {
+                id.clone()  // Use full ID with season:episode
+            } else {
+                metadata_id.clone()
+            };
             
-            match state.metadata_client.lookup_by_imdb(&metadata_id, &content_type).await {
+            eprintln!("DEBUG: IMDB ID detected: {} (full: {})", metadata_id, full_metadata_id);
+            
+            match state.metadata_client.lookup_by_imdb(&full_metadata_id, &content_type).await {
                 Ok(meta) => {
                     eprintln!("DEBUG: Found metadata: {} ({} queries)", meta.title, meta.search_queries.len());
                     meta.search_queries
@@ -442,28 +402,18 @@ async fn stream_handler(
         unique.sort_by(|a, b| b.seeders.cmp(&a.seeders));
         unique.truncate(50); // Keep top 50
         
-        // Save to cache
-        if let Err(e) = db::cache_torrents(&state.db_pool, &id, &unique).await {
-            eprintln!("DEBUG: Failed to cache torrents: {}", e);
-            error!("Failed to cache torrents: {}", e);
-        }
-        
         eprintln!("DEBUG: Found {} unique torrents for {}", unique.len(), id);
         info!("Found {} unique torrents for {}", unique.len(), id);
         unique
-    } else {
-        // If we have cached torrents, use them
-        eprintln!("DEBUG: Using {} cached torrents", torrents.len());
-        torrents
     };
 
-    // Convert to Stremio streams
+    // Convert to Stremio streams immediately without cache checking
     // Get base URL for absolute URLs
     let base_url = std::env::var("BASE_URL")
         .unwrap_or_else(|_| "http://torrentio-stack-aleinto97-54335f00.koyeb.app".to_string());
     
     // Parse the ID to extract season and episode for series
-    let (target_season, target_episode) = if id.contains(':') && !id.starts_with("kitsu:") {
+    let (target_season, target_episode) = if id.contains(':') && !id.starts_with("anilist:") {
         let parts: Vec<&str> = id.split(':').collect();
         if parts.len() >= 3 {
             let season = parts[1].parse::<u32>().ok();
@@ -472,8 +422,8 @@ async fn stream_handler(
         } else {
             (None, None)
         }
-    } else if id.starts_with("kitsu:") {
-        // For anime, extract from kitsu ID - but we don't have season/ep info
+    } else if id.starts_with("anilist:") {
+        // For anime, extract from anilist ID - but we don't have season/ep info
         (None, None)
     } else {
         (None, None)
@@ -499,29 +449,8 @@ async fn stream_handler(
         .filter(|t| {
             // Filter by season/episode if we have target info
             if let (Some(target_season), Some(target_episode)) = (target_season, target_episode) {
-                let title_upper = t.title.to_uppercase();
-                
-                // Check for exact season/episode match
-                let s_pattern = format!("S{:02}E{:02}", target_season, target_episode);
-                let s_pattern_alt = format!("S{}E{}", target_season, target_episode);
-                let s_pattern_alt2 = format!("S{:02}E{}", target_season, target_episode);
-                let s_pattern_alt3 = format!("S{}E{:02}", target_season, target_episode);
-                
-                // Also check for season-only torrents (full season packs should be excluded for specific episode requests)
-                let season_only_pattern = format!("S{:02}", target_season);
-                let season_only_pattern_alt = format!("SEASON {}", target_season);
-                
-                let has_exact_episode = title_upper.contains(&s_pattern) ||
-                                        title_upper.contains(&s_pattern_alt) ||
-                                        title_upper.contains(&s_pattern_alt2) ||
-                                        title_upper.contains(&s_pattern_alt3);
-                
-                // Exclude season packs when looking for specific episode
-                let is_season_pack = (title_upper.contains(&season_only_pattern) || 
-                                     title_upper.contains(&season_only_pattern_alt)) &&
-                                     !has_exact_episode;
-                
-                has_exact_episode && !is_season_pack
+                // Use regex with word boundaries to prevent false matches (e.g., S01E01 matching S01E016)
+                utils::is_exact_episode_match(&t.title, target_season, target_episode)
             } else {
                 true // No specific season/episode, include all
             }
@@ -547,154 +476,19 @@ async fn stream_handler(
     // Keep top 20 results
     sorted_torrents.truncate(20);
 
-    let streams: Vec<Stream> = sorted_torrents
+    // Convert to Stremio streams using new formatter
+    let streams: Vec<StremioStream> = sorted_torrents
         .into_iter()
         .map(|t| {
-            let title_upper = t.title.to_uppercase();
-            
-            // Extract resolution with quality icons
-            let resolution = if title_upper.contains("2160P") || title_upper.contains("4K") || title_upper.contains("UHD") {
-                "4K"
-            } else if title_upper.contains("1080P") {
-                "1080p"
-            } else if title_upper.contains("720P") {
-                "720p"
-            } else if title_upper.contains("480P") {
-                "480p"
-            } else {
-                "SD"
-            };
-            
-            // Extract HDR/Dolby Vision info
-            let mut hdr_info = Vec::new();
-            if title_upper.contains("DV") || title_upper.contains("DOBY VISION") || title_upper.contains("DOVI") {
-                hdr_info.push("DV");
-            }
-            if title_upper.contains("HDR10+") || title_upper.contains("HDR10PLUS") {
-                hdr_info.push("HDR10+");
-            } else if title_upper.contains("HDR10") {
-                hdr_info.push("HDR10");
-            } else if title_upper.contains("HDR") {
-                hdr_info.push("HDR");
-            }
-            if title_upper.contains("HLG") {
-                hdr_info.push("HLG");
-            }
-            
-            // Extract codec/encode format
-            let mut codec = String::new();
-            if title_upper.contains("X265") || title_upper.contains("HEVC") || title_upper.contains("H.265") || title_upper.contains("H265") {
-                codec = "x265".to_string();
-            } else if title_upper.contains("X264") || title_upper.contains("AVC") || title_upper.contains("H.264") || title_upper.contains("H264") {
-                codec = "x264".to_string();
-            } else if title_upper.contains("AV1") {
-                codec = "AV1".to_string();
-            } else if title_upper.contains("VP9") {
-                codec = "VP9".to_string();
-            }
-            
-            // Extract source type
-            let mut source = String::new();
-            if title_upper.contains("WEB-DL") || title_upper.contains("WEBDL") {
-                source = "WEB-DL".to_string();
-            } else if title_upper.contains("WEBRIP") || title_upper.contains("WEB-RIP") {
-                source = "WEB-Rip".to_string();
-            } else if title_upper.contains("BLURAY") || title_upper.contains("BLU-RAY") {
-                source = "BluRay".to_string();
-            } else if title_upper.contains("BDRIP") || title_upper.contains("BD-RIP") {
-                source = "BDRip".to_string();
-            } else if title_upper.contains("HDTV") {
-                source = "HDTV".to_string();
-            } else if title_upper.contains("HDCAM") || title_upper.contains("HD-CAM") {
-                source = "HDCAM".to_string();
-            } else if title_upper.contains("DVD") || title_upper.contains("DVDRIP") {
-                source = "DVD".to_string();
-            } else if title_upper.contains("CAM") {
-                source = "CAM".to_string();
-            } else if title_upper.contains("TS") || title_upper.contains("TELESYNC") {
-                source = "TS".to_string();
-            } else if title_upper.contains("TC") || title_upper.contains("TELECINE") {
-                source = "TC".to_string();
-            } else if title_upper.contains("SCR") || title_upper.contains("SCREENER") {
-                source = "SCR".to_string();
-            }
-            
-            // Extract release group (handles [Group], -Group patterns)
-            let release_group = extract_release_group(&t.title);
-            
-            // Extract container format
-            let mut container = String::new();
-            if title_upper.contains("MKV") {
-                container = "MKV".to_string();
-            } else if title_upper.contains("MP4") {
-                container = "MP4".to_string();
-            } else if title_upper.contains("AVI") {
-                container = "AVI".to_string();
-            } else if title_upper.contains("TS") && !source.eq("TS") {
-                container = "TS".to_string();
-            }
-            
-            // Build quality display with HDR info
-            let quality_display = if !hdr_info.is_empty() {
-                format!("{} {}", resolution, hdr_info.join("+"))
-            } else {
-                resolution.to_string()
-            };
-            
-            // Format size nicely
-            let size_str = if t.size_gb >= 10.0 {
-                format!("{:.1} GB", t.size_gb)
-            } else if t.size_gb >= 1.0 {
-                format!("{:.2} GB", t.size_gb)
-            } else {
-                format!("{:.0} MB", t.size_gb * 1024.0)
-            };
-            
-            // Build description parts
-            let mut desc_parts = Vec::new();
-            
-            // Seeders/Leechers with arrows
-            desc_parts.push(format!("⬆ {} ⬇ {}", t.seeders, t.leechers));
-            
-            // Codec
-            if !codec.is_empty() {
-                desc_parts.push(codec);
-            }
-            
-            // Container
-            if !container.is_empty() {
-                desc_parts.push(container);
-            }
-            
-            // Source
-            if !source.is_empty() {
-                desc_parts.push(source);
-            }
-            
-            // Add RD indicator (placeholder - will be updated when resolved)
-            desc_parts.push("RD ✓".to_string());
-            
-            // Build name with emoji icons
-            let name = format!("{} 🎬 {} | {} | 🌱 {}", 
-                quality_display, 
-                size_str, 
-                release_group,
-                t.seeders
-            );
-            
-            // Build description
-            let description = desc_parts.join(" | ");
-            
-            Stream {
-                name,
-                description,
-                info_hash: Some(t.info_hash.clone()),
-                url: Some(format!("{}/resolve/{}", base_url, t.info_hash)),
-                behavior_hints: serde_json::json!({
-                    "bingeGroup": "torrent-".to_string() + &t.source,
-                    "filename": t.title
-                }),
-            }
+            let info = TorrentInfo::from_scraped_torrent(&t);
+            let mut stream = StremioStream::from_torrent_info(&info, &base_url);
+            // Aggiungi [RD] all'inizio del name per indicare Real-Debrid
+            stream.name = format!("[RD]+\n{}", stream.name);
+            stream.behavior_hints = serde_json::json!({
+                "bingeGroup": format!("torrent-{}", t.source),
+                "filename": t.title
+            });
+            stream
         })
         .collect();
 
@@ -707,27 +501,50 @@ async fn resolve_handler(
 ) -> Result<Redirect, (axum::http::StatusCode, String)> {
     info!("Resolve request for hash: {}", hash);
 
-    // Check if we have cached resolved link
-    if let Ok(Some(cached_url)) = db::get_cached_resolve(&state.db_pool, &hash).await {
-        info!("Using cached resolved URL for {}", hash);
-        return Ok(Redirect::temporary(&cached_url));
-    }
-
-    // Resolve via Real-Debrid
-    match state.debrid_client.resolve_magnet(&hash).await {
-        Ok(video_url) => {
-            // Cache the resolved URL
-            if let Err(e) = db::cache_resolve(&state.db_pool, &hash, &video_url).await {
-                error!("Failed to cache resolved URL: {}", e);
-            }
-            
+    // Add magnet to RD and check immediate status (no pre-check)
+    // Longer timeout for user clicks - up to 5 minutes for download
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(300), // 5 minutes
+        state.debrid_client.resolve_magnet_with_status(&hash)
+    ).await {
+        Ok(Ok(ResolveResult::Ready(video_url))) => {
+            info!("Torrent {} ready, redirecting to video", hash);
             Ok(Redirect::temporary(&video_url))
         }
-        Err(e) => {
-            error!("Failed to resolve magnet: {}", e);
+        Ok(Ok(ResolveResult::Downloading(progress))) => {
+            info!("Torrent {} is downloading ({}%)", hash, progress);
+            // Return error with user-friendly message about download status
             Err((
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve: {}", e),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("⏳ Torrent in download su Real-Debrid ({}% completato). Riprova tra 2-3 minuti.", progress),
+            ))
+        }
+        Ok(Ok(ResolveResult::Queued)) => {
+            info!("Torrent {} is queued for download", hash);
+            Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "⏳ Torrent in coda su Real-Debrid. Riprova tra 2-3 minuti.".to_string(),
+            ))
+        }
+        Ok(Ok(ResolveResult::Processing)) => {
+            info!("Torrent {} is processing metadata", hash);
+            Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "⏳ Torrent in elaborazione su Real-Debrid. Riproza tra 1-2 minuti.".to_string(),
+            ))
+        }
+        Ok(Err(e)) => {
+            error!("Failed to resolve {}: {}", hash, e);
+            Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("❌ Errore: {}. Il torrent potrebbe non essere disponibile.", e),
+            ))
+        }
+        Err(_) => {
+            error!("Timeout for {} after 5 minutes", hash);
+            Err((
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                "⏱️ Timeout: il torrent sta ancora scaricando su Real-Debrid. Riprova tra qualche minuto.".to_string(),
             ))
         }
     }

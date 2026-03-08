@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
 use anyhow::Result;
-use crate::scrapers::{Scraper, ScrapedTorrent, extract_info_hash, create_magnet, parse_size};
+use crate::scrapers::{Scraper, ScrapedTorrent, extract_info_hash, parse_size};
 
 // 1337x mirrors - often less protected than main domain
 const X1337_MIRRORS: &[&str] = &[
@@ -11,37 +12,130 @@ const X1337_MIRRORS: &[&str] = &[
     "https://x1337x.ws",
 ];
 
+// FlareSolverr endpoint
+const FLARESOLVERR_URL: &str = "http://localhost:8191/v1";
+
 pub struct X1337Scraper {
     client: Client,
+    flaresolverr_enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct FlareSolverrRequest {
+    cmd: String,
+    url: String,
+    max_timeout: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlareSolverrResponse {
+    status: String,
+    message: String,
+    solution: Option<FlareSolverrSolution>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlareSolverrSolution {
+    url: String,
+    status: u16,
+    #[serde(rename = "response")]
+    html: String,
 }
 
 impl X1337Scraper {
     pub fn new() -> Result<Self> {
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
             .build()?;
         
-        Ok(Self { client })
+        // Check if FlareSolverr is enabled via env var
+        let flaresolverr_enabled = std::env::var("USE_FLARESOLVERR")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(true); // Default to true since 1337x needs it
+        
+        Ok(Self { client, flaresolverr_enabled })
     }
 
-    async fn search_with_mirror(&self, query: &str, mirror: &str) -> Result<Vec<ScrapedTorrent>> {
-        // 1337x search URL format
-        let search_url = format!("{}/search/{}/1/", mirror, urlencoding::encode(query));
+    async fn fetch_with_flaresolverr(&self, url: &str) -> Result<String> {
+        let payload = FlareSolverrRequest {
+            cmd: "request.get".to_string(),
+            url: url.to_string(),
+            max_timeout: 60000,
+        };
+        
+        tracing::info!("Using FlareSolverr for: {}", url);
         
         let response = self.client
-            .get(&search_url)
+            .post(FLARESOLVERR_URL)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("FlareSolverr returned status: {}", response.status()));
+        }
+
+        let result: FlareSolverrResponse = response.json().await?;
+        
+        if result.status != "ok" {
+            return Err(anyhow::anyhow!("FlareSolverr error: {}", result.message));
+        }
+        
+        let solution = result.solution
+            .ok_or_else(|| anyhow::anyhow!("No solution in FlareSolverr response"))?;
+        
+        if solution.status != 200 {
+            return Err(anyhow::anyhow!("FlareSolverr solution returned status: {}", solution.status));
+        }
+        
+        Ok(solution.html)
+    }
+
+    async fn fetch_direct(&self, url: &str) -> Result<String> {
+        let response = self.client
+            .get(url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .send()
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("1337x returned status: {}", response.status()));
+            return Err(anyhow::anyhow!("HTTP {}", response.status()));
         }
 
-        let html = response.text().await?;
+        Ok(response.text().await?)
+    }
+
+    async fn fetch_html(&self, url: &str) -> Result<String> {
+        if self.flaresolverr_enabled {
+            match self.fetch_with_flaresolverr(url).await {
+                Ok(html) => return Ok(html),
+                Err(e) => {
+                    tracing::warn!("FlareSolverr failed: {}, trying direct request", e);
+                    return self.fetch_direct(url).await;
+                }
+            }
+        } else {
+            self.fetch_direct(url).await
+        }
+    }
+
+    async fn search_with_mirror(&self, query: &str, mirror: &str) -> Result<Vec<ScrapedTorrent>> {
+        let search_url = format!("{}/search/{}/1/", mirror, urlencoding::encode(query));
+        
+        let html = match self.fetch_html(&search_url).await {
+            Ok(html) => html,
+            Err(e) => {
+                tracing::warn!("Failed to fetch search page from {}: {}", mirror, e);
+                return Ok(Vec::new());
+            }
+        };
         
         // Parse all torrent info first (synchronously)
         let torrent_info = self.parse_search_page(&html, mirror);
+        
+        if torrent_info.is_empty() {
+            tracing::warn!("No torrents found on search page from {}", mirror);
+        }
         
         // Now fetch magnets for each torrent
         let mut torrents = Vec::new();
@@ -58,6 +152,7 @@ impl X1337Scraper {
                         leechers,
                         source: "1337x".to_string(),
                         category: format!("uploader: {}", uploader),
+                        is_cached: false,
                     });
                 }
             }
@@ -133,17 +228,14 @@ impl X1337Scraper {
     }
 
     async fn fetch_magnet_from_details(&self, details_url: &str) -> Result<String> {
-        let response = self.client
-            .get(details_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to fetch details page"));
-        }
-
-        let html = response.text().await?;
+        let html = match self.fetch_html(details_url).await {
+            Ok(html) => html,
+            Err(e) => {
+                tracing::warn!("Failed to fetch details page {}: {}", details_url, e);
+                return Err(e);
+            }
+        };
+        
         let document = Html::parse_document(&html);
         
         // Look for magnet link
@@ -171,7 +263,10 @@ impl Scraper for X1337Scraper {
             match self.search_with_mirror(query, mirror).await {
                 Ok(torrents) if !torrents.is_empty() => return Ok(torrents),
                 Ok(_) => continue,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!("Mirror {} failed: {}", mirror, e);
+                    continue;
+                }
             }
         }
         

@@ -1,29 +1,11 @@
 # Koyeb deployment configuration
-# Uses Buildpack with custom build command for Rust
+# Uses Docker for Rust application
 
 name: hydrogene
 
 builder:
-  type: buildpack
-  build-command: |
-    # Install Rust
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.80.0
-    source $HOME/.cargo/env
-    
-    # Install dependencies
-    apt-get update && apt-get install -y pkg-config libssl-dev libpq-dev
-    
-    # Build release binary
-    cargo build --release --locked
-    
-    # Move binary to expected location
-    mkdir -p /app/bin
-    cp target/release/stremio-addon /app/bin/
-    
-    # Make executable
-    chmod +x /app/bin/stremio-addon
-
-  run-command: /app/bin/stremio-addon
+  type: docker
+  dockerfile: Dockerfile
 
 ports:
   - port: 8080

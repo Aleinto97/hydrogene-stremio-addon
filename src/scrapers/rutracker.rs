@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use anyhow::Result;
-use crate::scrapers::{Scraper, ScrapedTorrent, extract_info_hash, create_magnet, parse_size};
+use crate::scrapers::{Scraper, ScrapedTorrent, parse_size};
 
 const RUTRACKER_BASE: &str = "https://rutracker.org/forum";
 
@@ -149,6 +149,7 @@ impl RuTrackerScraper {
                 leechers,
                 source: "RuTracker".to_string(),
                 category,
+                is_cached: false,
             });
         }
         

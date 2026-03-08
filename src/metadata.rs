@@ -1,12 +1,11 @@
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 
 const TMDB_API_BASE: &str = "https://api.themoviedb.org/3";
 const OMDB_API_BASE: &str = "http://www.omdbapi.com";
 const ANILIST_API_BASE: &str = "https://graphql.anilist.co";
-const KITSU_PROXY_BASE: &str = "https://anime-kitsu.strem.fun";
 
 pub struct MetadataClient {
     client: Arc<Client>,
@@ -43,19 +42,6 @@ struct OMDBResult {
     content_type: Option<String>,
 }
 
-// Kitsu Proxy CDN Response (Community Stremio Addon)
-#[derive(Debug, Deserialize)]
-struct KitsuProxyResponse {
-    meta: KitsuProxyMeta,
-}
-
-#[derive(Debug, Deserialize)]
-struct KitsuProxyMeta {
-    name: String,
-    #[serde(rename = "type")]
-    content_type: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct ContentMetadata {
     pub title: String,
@@ -76,7 +62,7 @@ impl MetadataClient {
         })
     }
 
-    /// Resolve anime ID (kitsu: or anilist:) to title using CDN/GraphQL
+    /// Resolve anime ID (anilist:) to title using GraphQL
     pub async fn resolve_anime_title(&self, stremio_id: &str) -> Option<String> {
         let parts: Vec<&str> = stremio_id.split(':').collect();
         
@@ -84,34 +70,7 @@ impl MetadataClient {
         eprintln!("RESOLVE: Parts: {:?}", parts);
         
         match parts.as_slice() {
-            // --- CASE: KITSU via Community CDN ---
-            ["kitsu", id] | ["kitsu", id, _] => {
-                let url = format!("{}/meta/anime/kitsu:{}.json", KITSU_PROXY_BASE, id);
-                eprintln!("RESOLVE: Kitsu URL: {}", url);
-                
-                match self.client.get(&url).send().await {
-                    Ok(res) if res.status().is_success() => {
-                        eprintln!("RESOLVE: Kitsu response OK");
-                        match res.json::<KitsuProxyResponse>().await {
-                            Ok(data) => {
-                                eprintln!("RESOLVE: Kitsu SUCCESS -> '{}'", data.meta.name);
-                                return Some(data.meta.name);
-                            }
-                            Err(e) => {
-                                eprintln!("RESOLVE: Kitsu JSON parse error: {}", e);
-                            }
-                        }
-                    }
-                    Ok(res) => {
-                        eprintln!("RESOLVE: Kitsu bad status: {}", res.status());
-                    }
-                    Err(e) => {
-                        eprintln!("RESOLVE: Kitsu request error: {}", e);
-                    }
-                }
-            }
-            
-            // --- CASE: ANILIST via Minimal GraphQL ---
+            // --- CASE: ANILIST via GraphQL ---
             ["anilist", id] | ["anilist", id, _] => {
                 let anime_id = id.parse::<i32>().unwrap_or(0);
                 eprintln!("RESOLVE: AniList ID parsed: {}", anime_id);
@@ -176,9 +135,20 @@ impl MetadataClient {
     }
 
     pub async fn lookup_by_imdb(&self, imdb_id: &str, content_type: &str) -> Result<ContentMetadata> {
-        // Handle anime IDs (kitsu: or anilist:) via CDN/GraphQL
-        if imdb_id.starts_with("kitsu:") || imdb_id.starts_with("anilist:") {
-            tracing::info!("Resolving anime ID via CDN/GraphQL: {}", imdb_id);
+        // Parse season and episode from IMDB ID if present (format: tt1234567:1:3)
+        let id_parts: Vec<&str> = imdb_id.split(':').collect();
+        let (base_imdb_id, season, episode) = if id_parts.len() >= 3 {
+            let base = id_parts[0].to_string();
+            let season = id_parts[1].parse::<u32>().ok();
+            let episode = id_parts[2].parse::<u32>().ok();
+            (base, season, episode)
+        } else {
+            (imdb_id.to_string(), None, None)
+        };
+        
+        // Handle anime IDs (anilist:) via GraphQL
+        if imdb_id.starts_with("anilist:") {
+            tracing::info!("Resolving anime ID via GraphQL: {}", imdb_id);
             
             match self.resolve_anime_title(imdb_id).await {
                 Some(title) => {
@@ -196,9 +166,7 @@ impl MetadataClient {
             }
             
             // Fallback: use ID for direct search
-            let fallback_id = imdb_id
-                .replace("kitsu:", "")
-                .replace("anilist:", "");
+            let fallback_id = imdb_id.replace("anilist:", "");
             
             return Ok(ContentMetadata {
                 title: format!("Anime {}", fallback_id),
@@ -210,14 +178,30 @@ impl MetadataClient {
 
         // Try TMDB for movies/series
         if let Some(ref api_key) = self.tmdb_api_key {
-            if let Ok(metadata) = self.lookup_tmdb(imdb_id, content_type, api_key).await {
+            if let Ok(mut metadata) = self.lookup_tmdb(&base_imdb_id, content_type, api_key).await {
+                // Add season/episode specific queries for series
+                if let (Some(season_num), Some(episode_num)) = (season, episode) {
+                    let title = &metadata.title;
+                    // Add SXXEYY queries for better torrent matching
+                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title, season_num, episode_num));
+                    metadata.search_queries.push(format!("{} S{}E{}", title, season_num, episode_num));
+                    // Also add without colon (some trackers use this format)
+                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title.replace(":", ""), season_num, episode_num));
+                }
                 return Ok(metadata);
             }
         }
 
         // Fallback to OMDB
         if let Some(ref api_key) = self.omdb_api_key {
-            if let Ok(metadata) = self.lookup_omdb(imdb_id, api_key).await {
+            if let Ok(mut metadata) = self.lookup_omdb(&base_imdb_id, api_key).await {
+                // Add season/episode specific queries for series
+                if let (Some(season_num), Some(episode_num)) = (season, episode) {
+                    let title = &metadata.title;
+                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title, season_num, episode_num));
+                    metadata.search_queries.push(format!("{} S{}E{}", title, season_num, episode_num));
+                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title.replace(":", ""), season_num, episode_num));
+                }
                 return Ok(metadata);
             }
         }

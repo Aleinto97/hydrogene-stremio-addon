@@ -1,8 +1,17 @@
 [package]
-name = "stremio-addon"
+name = "hydrogene"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
+
+[lib]
+name = "hydrogene"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "stremio-addon"
+path = "src/main.rs"
 
 [dependencies]
 # Web Framework
@@ -26,19 +35,7 @@ reqwest = { version = "0.11", default-features = false, features = [
 scraper = "0.18"
 quick-xml = { version = "0.31", features = ["serialize"] }
 
-# Database
-sqlx = { version = "0.7", features = [
-    "runtime-tokio-rustls",
-    "postgres",
-    "migrate",
-    "uuid",
-    "chrono",
-    "macros"
-] }
-
 # Utilities
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.6", features = ["v4", "serde"] }
 thiserror = "1.0"
 anyhow = "1.0"
 tracing = "0.1"
@@ -58,6 +55,7 @@ percent-encoding = "2.3"
 
 # Regex for parsing
 regex = "1.10"
+once_cell = "1.19"
 
 [profile.release]
 opt-level = 3

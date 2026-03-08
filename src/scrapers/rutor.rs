@@ -46,6 +46,8 @@ impl RutorScraper {
         let row_selector = Selector::parse("div#index table tr.gai, div#index table tr.tum").unwrap();
         let td_selector = Selector::parse("td").unwrap();
         let a_selector = Selector::parse("a").unwrap();
+        let green_selector = Selector::parse("span.green").unwrap();
+        let red_selector = Selector::parse("span.red").unwrap();
         
         for row in document.select(&row_selector) {
             let tds: Vec<_> = row.select(&td_selector).collect();
@@ -109,12 +111,9 @@ impl RutorScraper {
             
             let size_bytes = parse_size(&size_str);
             
-            // Extract seeders from the last column (format: S | L)
-            let peers_text = tds.last()
-                .map(|td| td.text().collect::<String>())
-                .unwrap_or_default();
-            
-            let (seeders, leechers) = Self::parse_peers(&peers_text);
+            // Extract seeders and leechers from the last column
+            let peers_cell = tds.last().unwrap();
+            let (seeders, leechers) = self.parse_peers_from_cell(peers_cell, &green_selector, &red_selector);
             
             // Category from first column
             let category = tds.get(0)
@@ -134,20 +133,34 @@ impl RutorScraper {
                 leechers,
                 source: "Rutor".to_string(),
                 category,
+                is_cached: false,
             });
         }
         
         Ok(torrents)
     }
 
-    fn parse_peers(text: &str) -> (i32, i32) {
-        let parts: Vec<&str> = text.split('|').collect();
-        let seeders = parts.get(0)
-            .and_then(|s| s.trim().parse::<i32>().ok())
+    fn parse_peers_from_cell(&self, cell: &scraper::ElementRef, green_selector: &Selector, red_selector: &Selector) -> (i32, i32) {
+        // Rutor peers cell format: <span class="green">&nbsp;51</span>&nbsp;<span class="red">&nbsp;3</span>
+        let seeders = cell.select(green_selector)
+            .next()
+            .and_then(|span| span.text().next())
+            .and_then(|text| {
+                let num: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+                num.parse::<i32>().ok()
+            })
             .unwrap_or(0);
-        let leechers = parts.get(1)
-            .and_then(|s| s.trim().parse::<i32>().ok())
+        
+        let leechers = cell.select(red_selector)
+            .next()
+            .and_then(|span| span.text().next())
+            .and_then(|text| {
+                let num: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+                num.parse::<i32>().ok()
+            })
             .unwrap_or(0);
+        
+        tracing::debug!("Parsed peers: seeders={}, leechers={}", seeders, leechers);
         (seeders, leechers)
     }
 }
