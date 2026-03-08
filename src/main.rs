@@ -342,10 +342,10 @@ async fn stream_handler(
         eprintln!("DEBUG: Entering scraping block!");
         
         // Special handling for anime - log it
-        let is_anime = metadata_id.starts_with("kitsu:");
+        let is_anime = metadata_id.starts_with("kitsu:") || metadata_id.starts_with("anilist:");
         if is_anime {
-            eprintln!("DEBUG: Anime detected! Will lookup via Kitsu API");
-            info!("Processing anime request with Kitsu ID: {}", metadata_id);
+            eprintln!("DEBUG: Anime detected! Will lookup via AniList API: {}", metadata_id);
+            info!("Processing anime request: {}", metadata_id);
         }
         
         // Parse title for season/episode info (e.g., "Attack on Titan S01E01" or "Attack on Titan - Episode 1")
