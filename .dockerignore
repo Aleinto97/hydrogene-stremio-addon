@@ -1,0 +1,48 @@
+# Build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Environment (secrets)
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Documentation
+README.md
+CHANGELOG.md
+LICENSE
+*.md
+
+# Tests
+/tests
+**/*_test.rs
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.travis.yml
+
+# Misc
+*.log
+*.tmp

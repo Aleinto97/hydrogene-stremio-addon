@@ -1,0 +1,63 @@
+[package]
+name = "stremio-addon"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[dependencies]
+# Web Framework
+axum = { version = "0.7", features = ["tokio", "macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "compression-gzip", "trace"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP Client with TLS
+reqwest = { version = "0.11", default-features = false, features = [
+    "rustls-tls",
+    "cookies",
+    "json"
+] }
+
+# HTML Parsing
+scraper = "0.18"
+
+# Database
+sqlx = { version = "0.7", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "migrate",
+    "uuid",
+    "chrono",
+    "macros"
+] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Environment
+dotenvy = "0.15"
+
+# Async
+futures = "0.3"
+async-trait = "0.1"
+
+# URL/URI
+url = "2.5"
+urlencoding = "2.1"
+percent-encoding = "2.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
