@@ -348,68 +348,59 @@ async fn stream_handler(
     let torrents = if torrents.is_empty() {
         eprintln!("DEBUG: Entering scraping block!");
         
-        // Special handling for anime - log it
-        let is_anime = metadata_id.starts_with("kitsu:") || metadata_id.starts_with("anilist:");
-        if is_anime {
-            eprintln!("DEBUG: Anime detected! Will lookup via AniList API: {}", metadata_id);
-            info!("Processing anime request: {}", metadata_id);
-        }
-        
-        // Parse title for season/episode info (e.g., "Attack on Titan S01E01" or "Attack on Titan - Episode 1")
-        let (parsed_title, parsed_season, parsed_episode) = parse_title_for_episode(&metadata_id);
-        
-        // Check if TMDB key is configured
-        let tmdb_key = std::env::var("TMDB_API_KEY").ok();
-        eprintln!("DEBUG: TMDB_API_KEY present: {}", tmdb_key.is_some());
-        
-        // Determine search queries based on ID type
-        eprintln!("DEBUG: Checking ID type - is_anime={}, starts_with_tt={}, metadata_id={}", is_anime, metadata_id.starts_with("tt"), metadata_id);
-        let search_queries: Vec<String> = if !is_anime && !metadata_id.starts_with("tt") {
-            // For direct title searches (not IMDB, not Kitsu)
-            eprintln!("DEBUG: Using direct title search: {}", metadata_id);
+        // Determine search queries
+        let search_queries: Vec<String> = if metadata_id.starts_with("kitsu:") || metadata_id.starts_with("anilist:") {
+            // --- ANIME: Use CDN/GraphQL to resolve title ---
+            eprintln!("DEBUG: Anime ID detected: {}", metadata_id);
             
-            let mut queries = vec![metadata_id.clone()];
+            // Extract episode number from ID if present (format: kitsu:ID:EP or anilist:ID:EP)
+            let parts: Vec<&str> = metadata_id.split(':').collect();
+            let episode = if parts.len() >= 3 {
+                parts[2].parse::<u32>().ok()
+            } else {
+                None
+            };
             
-            // If we parsed season/episode from title, add specific queries
-            if let (Some(season), Some(episode)) = (parsed_season, parsed_episode) {
-                // Query with SXXEYY format
-                let sxxeyy_query = format!("{} S{:02}E{:02}", parsed_title, season, episode);
-                queries.push(sxxeyy_query);
-                
-                // Query with Season X Episode Y format
-                let season_ep_query = format!("{} Season {} Episode {}", parsed_title, season, episode);
-                queries.push(season_ep_query);
-                
-                // Query with just season for pack torrents
-                let season_pack_query = format!("{} S{:02}", parsed_title, season);
-                queries.push(season_pack_query);
-                
-                eprintln!("DEBUG: Parsed S{:02}E{:02} from title, added {} queries", season, episode, queries.len());
-            } else if let Some(season) = parsed_season {
-                // Only season info available
-                let season_query = format!("{} S{:02}", parsed_title, season);
-                queries.push(season_query);
-                let season_text_query = format!("{} Season {}", parsed_title, season);
-                queries.push(season_text_query);
+            // Resolve anime title using CDN/GraphQL
+            match state.metadata_client.resolve_anime_title(&metadata_id).await {
+                Some(title) => {
+                    eprintln!("DEBUG: Anime resolved to title: {}", title);
+                    
+                    // Build queries with episode info
+                    let mut queries = vec![title.clone()];
+                    
+                    if let Some(ep) = episode {
+                        // Add episode-specific queries
+                        queries.push(format!("{} {:02}", title, ep));  // "Attack on Titan 01"
+                        queries.push(format!("{} E{:02}", title, ep)); // "Attack on Titan E01"
+                        eprintln!("DEBUG: Added episode {} to queries", ep);
+                    }
+                    
+                    queries
+                }
+                None => {
+                    eprintln!("DEBUG: Failed to resolve anime title, using ID fallback");
+                    vec![metadata_id.clone()]
+                }
             }
+        } else if metadata_id.starts_with("tt") {
+            // --- MOVIES/SERIES: Use TMDB ---
+            eprintln!("DEBUG: IMDB ID detected: {}", metadata_id);
             
-            queries
-        } else {
-            // Lookup metadata to get title (use metadata_id for series episodes)
-            let metadata = match state.metadata_client.lookup_by_imdb(&metadata_id, &content_type).await {
+            match state.metadata_client.lookup_by_imdb(&metadata_id, &content_type).await {
                 Ok(meta) => {
-                    eprintln!("DEBUG: Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
-                    info!("Found metadata: {} ({})", meta.title, meta.year.as_ref().unwrap_or(&"N/A".to_string()));
-                    meta.search_queries.clone()
+                    eprintln!("DEBUG: Found metadata: {} ({} queries)", meta.title, meta.search_queries.len());
+                    meta.search_queries
                 }
                 Err(e) => {
-                    eprintln!("DEBUG: Failed to lookup metadata for {}: {}", id, e);
-                    error!("Failed to lookup metadata for {}: {}", id, e);
-                    // Fallback: use ID as search query
-                    vec![id.clone()]
+                    eprintln!("DEBUG: Failed to lookup metadata: {}", e);
+                    vec![metadata_id.clone()]
                 }
-            };
-            metadata
+            }
+        } else {
+            // --- DIRECT TITLE SEARCH ---
+            eprintln!("DEBUG: Direct title search: {}", metadata_id);
+            vec![metadata_id.clone()]
         };
 
         // Try scraping with different search queries
