@@ -211,7 +211,7 @@ async fn stream_handler(
     
     info!("Stream request: type={}, id={}", content_type, id);
 
-    let torrents = {
+    let (torrents, target_year, target_season, target_episode) = {
         let (target_season, target_episode) = if id.contains(':') && !id.starts_with("anilist:") {
             let parts: Vec<&str> = id.split(':').collect();
             if parts.len() >= 3 {
@@ -246,9 +246,9 @@ async fn stream_handler(
                             let ep_queries = build_anime_episode_queries(&queries, ep);
                             queries.extend(ep_queries);
                         }
-                        queries
+                        (queries, meta.year)
                     }
-                    Err(_) => vec![metadata_id.clone()]
+                    Err(_) => (vec![metadata_id.clone()], None)
                 }
             } else if metadata_id.starts_with("tt") {
                 let full_metadata_id = if id.contains(':') && !id.starts_with("anilist:") {
@@ -258,19 +258,20 @@ async fn stream_handler(
                 };
                 
                 match state.metadata_client.lookup_by_imdb(&full_metadata_id, &content_type).await {
-                    Ok(meta) => meta.search_queries,
+                    Ok(meta) => (meta.search_queries, meta.year),
                     Err(e) => {
                         tracing::error!("Metadata lookup failed for {}: {}. Falling back to ID search.", full_metadata_id, e);
-                        vec![metadata_id.clone()]
+                        (vec![metadata_id.clone()], None)
                     }
                 }
             } else {
-                vec![metadata_id.clone()]
+                (vec![metadata_id.clone()], None)
             }
         };
 
-        let mut search_queries = metadata_future.await;
+        let (search_queries, target_year) = metadata_future.await;
         
+        let mut search_queries = search_queries;
         search_queries.sort_by(|a, b| {
             let a_exact = a.to_lowercase().contains(&id.to_lowercase());
             let b_exact = b.to_lowercase().contains(&id.to_lowercase());
@@ -311,29 +312,11 @@ async fn stream_handler(
         unique.truncate(50);
         
         info!("Found {} unique torrents for {}", unique.len(), id);
-        unique
+        (unique, target_year, target_season, target_episode)
     };
 
     let base_url = std::env::var("BASE_URL")
         .unwrap_or_else(|_| "http://torrentio-stack-aleinto97-54335f00.koyeb.app".to_string());
-    
-    let (target_season, target_episode) = if id.contains(':') && !id.starts_with("anilist:") {
-        let parts: Vec<&str> = id.split(':').collect();
-        if parts.len() >= 3 {
-            (parts[1].parse::<u32>().ok(), parts[2].parse::<u32>().ok())
-        } else {
-            (None, None)
-        }
-    } else if id.starts_with("anilist:") {
-        let parts: Vec<&str> = id.split(':').collect();
-        if parts.len() >= 3 {
-            (Some(1), parts[2].parse::<u32>().ok())
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
-    };
 
     let min_seeders: i32 = std::env::var("MIN_SEEDERS")
         .unwrap_or_else(|_| "1".to_string())
@@ -341,7 +324,7 @@ async fn stream_handler(
         .unwrap_or(1);
     
     let total_scraped = torrents.len();
-    let mut filtered_torrents: Vec<ScrapedTorrent> = torrents
+    let filtered_torrents: Vec<ScrapedTorrent> = torrents
         .into_iter()
         .filter(|t| t.seeders >= min_seeders)
         .filter(|t| {
@@ -351,12 +334,27 @@ async fn stream_handler(
                 true
             }
         })
+        .filter(|t| {
+            // Filter by year if available (only for movies/series, not anime)
+            if let Some(year) = &target_year {
+                if !metadata_id.starts_with("anilist:") {
+                    let title_upper = t.title.to_uppercase();
+                    // Check if year is present in the title or filename
+                    if !title_upper.contains(year) {
+                        // If year is not in the title, still accept it but prefer results with year
+                        // We'll handle preference in scoring
+                        return true;
+                    }
+                }
+            }
+            true
+        })
         .collect();
     
     let mut scored_torrents: Vec<(ScrapedTorrent, i32)> = filtered_torrents
         .into_iter()
         .map(|t| {
-            let score = calculate_quality_score(&t.title, t.seeders, t.size_bytes);
+            let score = calculate_quality_score(&t.title, t.seeders, t.size_bytes, &target_year);
             (t, score)
         })
         .collect();
@@ -391,9 +389,16 @@ async fn stream_handler(
     Json(StreamResponse { streams })
 }
 
-fn calculate_quality_score(title: &str, seeders: i32, size_bytes: u64) -> i32 {
+fn calculate_quality_score(title: &str, seeders: i32, size_bytes: u64, target_year: &Option<String>) -> i32 {
     let mut score = 0;
     let title_upper = title.to_uppercase();
+    
+    // Year matching bonus
+    if let Some(year) = target_year {
+        if title_upper.contains(year) {
+            score += 20; // Strong bonus for matching year
+        }
+    }
     
     if title_upper.contains("2160P") || title_upper.contains("4K") || title_upper.contains("UHD") {
         score += 100;
