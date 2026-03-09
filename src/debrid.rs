@@ -250,21 +250,42 @@ impl RealDebridClient {
         }
         
         // Step 3: Wait for metadata if needed
-        let torrent_info = self.wait_for_metadata(&torrent_id).await?;
+        let mut torrent_info = self.wait_for_metadata(&torrent_id).await?;
         
-        // Check status after metadata
+        // If we have files but haven't selected them yet, select them now
+        if torrent_info.status == "waiting_files_selection" && !torrent_info.files.is_empty() {
+            info!("Torrent needs file selection, selecting main video...");
+            let main_video_id = self.select_main_video(&torrent_info)?;
+            self.select_files(&torrent_id, &main_video_id.to_string()).await?;
+            
+            // Get updated info after selection
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            torrent_info = self.get_torrent_info(&torrent_id).await?;
+            info!("Status after file selection: {}", torrent_info.status);
+        }
+        
+        // Check status after metadata and potential selection
         match torrent_info.status.as_str() {
             "downloaded" => {
-                info!("Torrent downloaded after metadata wait");
-                let main_video_id = self.select_main_video(&torrent_info)?;
-                self.select_files(&torrent_id, &main_video_id.to_string()).await?;
+                info!("Torrent downloaded/cached");
                 
-                if let Some(link) = torrent_info.links.first() {
+                // Ensure files are select (in case it was already downloaded but not selected)
+                if torrent_info.links.is_empty() {
+                    let main_video_id = self.select_main_video(&torrent_info)?;
+                    self.select_files(&torrent_id, &main_video_id.to_string()).await?;
+                    // Re-fetch to get links
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    let updated_info = self.get_torrent_info(&torrent_id).await?;
+                    if let Some(link) = updated_info.links.first() {
+                        let video_url = self.unrestrict_link(link).await?;
+                        return Ok(ResolveResult::Ready(video_url));
+                    }
+                } else if let Some(link) = torrent_info.links.first() {
                     let video_url = self.unrestrict_link(link).await?;
-                    Ok(ResolveResult::Ready(video_url))
-                } else {
-                    Err(anyhow!("No links available after download"))
+                    return Ok(ResolveResult::Ready(video_url));
                 }
+                
+                Err(anyhow!("No links available after download/selection"))
             }
             "downloading" => {
                 info!("Torrent is downloading: {}%", torrent_info.progress);
@@ -275,17 +296,23 @@ impl RealDebridClient {
                 Ok(ResolveResult::Queued)
             }
             "magnet_conversion" | "waiting_files_selection" => {
-                info!("Torrent is processing metadata");
+                info!("Torrent is still processing metadata or waiting selection");
                 Ok(ResolveResult::Processing)
             }
             "error" => {
                 Err(anyhow!("Torrent error on RD"))
             }
+            "virus" => {
+                Err(anyhow!("Torrent flagged as virus by RD"))
+            }
+            "dead" => {
+                Err(anyhow!("Torrent is dead (no seeds)"))
+            }
             _ => {
                 // For other statuses, try to wait a bit
                 info!("Unknown status: {}, attempting to wait...", torrent_info.status);
                 let check_interval = 5;
-                let max_checks = 60; // 5 minutes max
+                let max_checks = 12; // 1 minute max for this loop
                 
                 for check in 0..max_checks {
                     tokio::time::sleep(tokio::time::Duration::from_secs(check_interval)).await;
@@ -294,9 +321,6 @@ impl RealDebridClient {
                     match info.status.as_str() {
                         "downloaded" => {
                             info!("Torrent ready after {} checks", check + 1);
-                            let main_video_id = self.select_main_video(&info)?;
-                            self.select_files(&torrent_id, &main_video_id.to_string()).await?;
-                            
                             if let Some(link) = info.links.first() {
                                 let video_url = self.unrestrict_link(link).await?;
                                 return Ok(ResolveResult::Ready(video_url));
@@ -305,15 +329,15 @@ impl RealDebridClient {
                         "downloading" => {
                             return Ok(ResolveResult::Downloading(info.progress));
                         }
-                        "error" => {
-                            return Err(anyhow!("Torrent error during download"));
+                        "error" | "virus" | "dead" => {
+                            return Err(anyhow!("Torrent error during background wait: {}", info.status));
                         }
                         _ => continue,
                     }
                 }
                 
                 // Timeout - still not ready
-                Ok(ResolveResult::Downloading(0.0))
+                Ok(ResolveResult::Downloading(torrent_info.progress))
             }
         }
     }
