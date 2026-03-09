@@ -64,9 +64,9 @@ impl ScraperManager {
         use tracing::{warn, debug};
 
         let query = Self::id_to_query(id);
-        let scraper_timeout = Duration::from_secs(3);
-        let target_results = 30;
-        let min_scrapers_to_wait = (self.scrapers.len() as f32 * 0.5) as usize;
+        let scraper_timeout = Duration::from_secs(5);
+        let target_results = 100;  // Increased for better accuracy
+        let min_scrapers_to_wait = (self.scrapers.len() as f32 * 0.7) as usize;  // Wait for 70% of scrapers
 
         let target_scrapers: Vec<_> = self.scrapers
             .iter()
@@ -119,8 +119,7 @@ impl ScraperManager {
                 }
             }
             
-            if all_torrents.len() >= target_results || 
-               (all_torrents.len() >= 15 && completed_scrapers >= (num_scrapers * 5 / 10)) {
+            if all_torrents.len() >= target_results && completed_scrapers >= min_scrapers_to_wait {
                 if completed_scrapers < num_scrapers {
                     debug!("returning early from scrapers ({}/{}) with {} results", 
                            completed_scrapers, num_scrapers, all_torrents.len());
