@@ -108,15 +108,27 @@ async fn main() -> anyhow::Result<()> {
 
     let app = app.layer(axum::middleware::from_fn(timeout_middleware));
     
-    let port = std::env::var("PORT")
-        .unwrap_or_else(|_| "8080".to_string())
-        .parse::<u16>()?;
+    let port_str = std::env::var("PORT")
+        .unwrap_or_else(|_| "8080".to_string());
+    let port = port_str.parse::<u16>().unwrap_or(8080);
     
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("Server listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    let listener = tokio::net::TcpListener::bind(&addr).await
+        .map_err(|e| {
+            error!("Failed to bind to {}: {}", addr, e);
+            e
+        })?;
+    
+    info!("Bind successful, starting server...");
+    
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| {
+            error!("Server error: {}", e);
+            e
+        })?;
 
     Ok(())
 }
