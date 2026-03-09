@@ -342,6 +342,9 @@ async fn stream_handler(
         .into_iter()
         .filter(|t| t.seeders >= min_seeders)
         .filter(|t| quality_bucket(&t.title) >= 4)
+        .filter(|t| {
+            passes_quality_size_filter(&t.title, t.size_bytes, target_season, target_episode)
+        })
         .map(|t| {
             // Use advanced matching with fuzzy logic
             let score = hydrogene::calculate_match_score(
@@ -466,6 +469,36 @@ fn quality_bucket(title: &str) -> i32 {
     } else {
         1
     }
+}
+
+fn passes_quality_size_filter(
+    title: &str,
+    size_bytes: u64,
+    target_season: Option<u32>,
+    target_episode: Option<u32>,
+) -> bool {
+    match quality_bucket(title) {
+        5 => true,
+        4 => {
+            let min_size_mb = if target_episode.is_some() {
+                env_u64("MIN_1080P_EPISODE_MB", 1100)
+            } else if target_season.is_some() {
+                env_u64("MIN_1080P_SERIES_MB", 2000)
+            } else {
+                env_u64("MIN_1080P_MOVIE_MB", 3000)
+            };
+
+            size_bytes >= min_size_mb * 1024 * 1024
+        }
+        _ => false,
+    }
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
 }
 
 async fn scrape_queries_progressively(
