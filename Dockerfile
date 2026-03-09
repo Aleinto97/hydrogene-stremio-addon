@@ -1,36 +1,9 @@
 # ===========================================
-# Stage 1: Planner
-# ===========================================
-FROM lukemathwalker/cargo-chef:latest-rust-1.88-slim-bookworm AS planner
-WORKDIR /app
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-# ===========================================
-# Stage 2: Cacher
-# ===========================================
-FROM lukemathwalker/cargo-chef:latest-rust-1.88-slim-bookworm AS cacher
-WORKDIR /app
-COPY --from=planner /app/recipe.json recipe.json
-
-# Install dependencies for compilation
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    libpq-dev \
-    lld \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Build dependencies only (cached layer)
-RUN cargo chef cook --release --recipe-path recipe.json
-
-# ===========================================
-# Stage 3: Builder
+# Stage 1: Builder (Rust official image)
 # ===========================================
 FROM rust:1.88-slim-bookworm AS builder
 
-# Install dependencies for compilation
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -39,31 +12,28 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
 
-# Copy pre-compiled dependencies
-COPY --from=cacher /app/target target
-COPY --from=cacher /usr/local/cargo /usr/local/cargo
+# Download and compile dependencies first
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs && echo "pub fn dummy() {}" > src/lib.rs
+RUN cargo build --release && rm -rf src
 
-# Build the actual application with fast linker
-RUN cargo update && RUSTFLAGS="-C link-arg=-fuse-ld=lld" cargo build --release --locked
-
-# Strip binary to reduce size
-RUN strip target/release/stremio-addon
+# Copy actual source and rebuild
+COPY src ./src
+RUN cargo build --release
 
 # ===========================================
-# Stage 4: Runner
+# Stage 2: Runner
 # ===========================================
 FROM debian:bookworm-slim AS runner
 
-# Install runtime dependencies only
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libpq5 \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
