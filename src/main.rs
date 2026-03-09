@@ -39,6 +39,8 @@ async fn main() -> anyhow::Result<()> {
         .add_directive("axum=info".parse().unwrap())
         .add_directive("scraper=info".parse().unwrap())
         .add_directive("selectors=info".parse().unwrap())
+        .add_directive("html5ever=info".parse().unwrap())
+        .add_directive("tendril=info".parse().unwrap())
         .add_directive("hyper=info".parse().unwrap())
         .add_directive("h2=info".parse().unwrap())
         .add_directive("rustls=info".parse().unwrap());
@@ -475,7 +477,7 @@ async fn stream_handler(
         match (a_is_4k, b_is_4k) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => b.seeders.cmp(&a.seeders) // Then by seeders (most first)
+            _ => b.size_bytes.cmp(&a.size_bytes) // Then by size (largest first)
         }
     });
 
