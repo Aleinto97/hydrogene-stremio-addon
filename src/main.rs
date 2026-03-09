@@ -6,7 +6,8 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::{info, error, Level};
+use tower_http::trace::TraceLayer;
 
 use hydrogene::debrid;
 use hydrogene::metadata;
@@ -30,9 +31,13 @@ async fn main() -> anyhow::Result<()> {
     // Load environment variables
     dotenvy::dotenv().ok();
     
-    // Initialize tracing
+    // Initialize tracing with a custom filter
+    // Default to info, but suppress debug logs from tower_http and other verbose dependencies
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=info,axum=info"));
+    
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .init();
 
     info!("Starting Stremio Addon Server...");
@@ -64,9 +69,25 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(root_handler))
         .route("/manifest.json", get(manifest_handler))
         .route("/stream/:type/:id.json", get(stream_handler))
+        .route("/cached/:type/:id.json", get(cached_handler))
         .route("/resolve/:hash", get(resolve_handler))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    let uri = request.uri().to_string();
+                    // Do not create spans for health check on root path to keep logs clean
+                    if uri == "/" {
+                        tracing::Span::none()
+                    } else {
+                        tracing::info_span!(
+                            "request",
+                            method = %request.method(),
+                            uri = %uri,
+                        )
+                    }
+                })
+        )
         .layer(tower_http::cors::CorsLayer::permissive())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(app_state);
 
     // Add global timeout middleware (15 seconds max per request)
@@ -93,19 +114,19 @@ async fn timeout_middleware(
 ) -> axum::response::Response {
     let uri = req.uri().to_string();
     
-    // Skip timeout for health checks, manifest, and resolve endpoint
-    if uri == "/" || uri == "/manifest.json" || uri.starts_with("/resolve/") {
+    // Skip timeout for health checks, manifest, resolve, and cached endpoints
+    if uri == "/" || uri == "/manifest.json" || uri.starts_with("/resolve/") || uri.starts_with("/cached/") {
         return next.run(req).await;
     }
     
-    // Apply 1 second timeout for stream requests (fast response is critical)
+    // Apply 10 second timeout for stream requests (fast response is critical)
     match tokio::time::timeout(
-        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(10),
         next.run(req)
     ).await {
         Ok(response) => response,
         Err(_) => {
-            tracing::warn!("Request timeout for {} after 1s", uri);
+            tracing::warn!("Request timeout for {} after 10s", uri);
             // Return empty streams on timeout
             let body = axum::body::Body::from(r#"{"streams": []}"#);
             axum::response::Response::builder()
@@ -292,55 +313,38 @@ async fn stream_handler(
         id.clone()
     };
     
-    eprintln!("DEBUG: Stream request: type={}, id={}, base_id={}, metadata_id={}", 
-              content_type, id, base_id, metadata_id);
     info!("Stream request: type={}, id={}", content_type, id);
 
     // Direct search without cache checking - results returned immediately
-    eprintln!("STEP 1: Starting direct search for {}", id);
     let torrents = {
-        eprintln!("STEP 2: Entering scraping block - metadata_id={}", metadata_id);
-        
         // Determine search queries
-        let search_queries: Vec<String> = if metadata_id.starts_with("anilist:") {
+        let search_queries: Vec<String> =         if metadata_id.starts_with("anilist:") {
             // --- ANIME: Use GraphQL to resolve title ---
-            eprintln!("STEP 3: ANIME BRANCH - metadata_id is anime: {}", metadata_id);
             
             // Extract episode number from ID if present (format: anilist:ID:EP)
             let parts: Vec<&str> = metadata_id.split(':').collect();
-            eprintln!("STEP 4: ID parts: {:?}", parts);
             
             let episode = if parts.len() >= 3 {
-                let ep = parts[2].parse::<u32>().ok();
-                eprintln!("STEP 5: Parsed episode: {:?}", ep);
-                ep
+                parts[2].parse::<u32>().ok()
             } else {
-                eprintln!("STEP 5: No episode in ID");
                 None
             };
             
             // Resolve anime title using GraphQL
-            eprintln!("STEP 6: Calling resolve_anime_title() for {}", metadata_id);
             match state.metadata_client.resolve_anime_title(&metadata_id).await {
                 Some(title) => {
-                    eprintln!("STEP 7: SUCCESS - Resolved to title: '{}'", title);
-                    
                     // Build queries with episode info
                     let mut queries = vec![title.clone()];
                     
                     if let Some(ep) = episode {
                         // Add episode-specific queries
-                        queries.push(format!("{} {:02}", title, ep));  // "Attack on Titan 01"
-                        queries.push(format!("{} E{:02}", title, ep)); // "Attack on Titan E01"
-                        eprintln!("STEP 8: Added episode {} queries. Total: {}", ep, queries.len());
-                    } else {
-                        eprintln!("STEP 8: No episode, using title only: {}", queries.len());
+                        queries.push(format!("{} {:02}", title, ep));
+                        queries.push(format!("{} E{:02}", title, ep));
                     }
                     
                     queries
                 }
                 None => {
-                    eprintln!("STEP 7: FAILED - resolve_anime_title() returned None");
                     vec![metadata_id.clone()]
                 }
             }
@@ -353,33 +357,27 @@ async fn stream_handler(
                 metadata_id.clone()
             };
             
-            eprintln!("DEBUG: IMDB ID detected: {} (full: {})", metadata_id, full_metadata_id);
-            
             match state.metadata_client.lookup_by_imdb(&full_metadata_id, &content_type).await {
                 Ok(meta) => {
-                    eprintln!("DEBUG: Found metadata: {} ({} queries)", meta.title, meta.search_queries.len());
                     meta.search_queries
                 }
                 Err(e) => {
-                    eprintln!("DEBUG: Failed to lookup metadata: {}", e);
+                    tracing::error!("Metadata lookup failed for {}: {}. Falling back to ID search.", full_metadata_id, e);
                     vec![metadata_id.clone()]
                 }
             }
         } else {
             // --- DIRECT TITLE SEARCH ---
-            eprintln!("DEBUG: Direct title search: {}", metadata_id);
             vec![metadata_id.clone()]
         };
 
         // Try scraping with different search queries
         let mut all_torrents = Vec::new();
         
-        eprintln!("DEBUG: Will try {} queries", search_queries.len());
         for query in &search_queries {
-            eprintln!("DEBUG: Scraping for query: {}", query);
             info!("Scraping for query: {}", query);
             let scraped = state.scraper_manager.scrape_all(query, &content_type).await;
-            eprintln!("DEBUG: Scraped {} torrents for query {}", scraped.len(), query);
+            info!("Scraper found {} results for query: {}", scraped.len(), query);
             all_torrents.extend(scraped);
             
             // Small delay between queries to avoid rate limiting
@@ -397,7 +395,6 @@ async fn stream_handler(
         unique.sort_by(|a, b| b.seeders.cmp(&a.seeders));
         unique.truncate(50); // Keep top 50
         
-        eprintln!("DEBUG: Found {} unique torrents for {}", unique.len(), id);
         info!("Found {} unique torrents for {}", unique.len(), id);
         unique
     };
@@ -451,6 +448,12 @@ async fn stream_handler(
             }
         })
         .collect();
+    
+    info!("Total unique torrents: {}, Filtered (quality/episode): {}", unique.len(), filtered_torrents.len());
+    if filtered_torrents.is_empty() && !unique.is_empty() {
+        info!("No torrents matched the filters (min seeders: {}, quality: 1080p+, episode match: {:?}:{:?})", 
+            min_seeders, target_season, target_episode);
+    }
 
     // Sort by quality first (4K > 1080p), then by seeders (most seeders first)
     let mut sorted_torrents = filtered_torrents;
@@ -482,6 +485,100 @@ async fn stream_handler(
             stream.behavior_hints = serde_json::json!({
                 "bingeGroup": format!("torrent-{}", t.source),
                 "filename": t.title
+            });
+            stream
+        })
+        .collect();
+
+    Json(StreamResponse { streams })
+}
+
+// New handler that only shows torrents already cached on Real-Debrid
+async fn cached_handler(
+    State(state): State<AppState>,
+    Path((content_type, id)): Path<(String, String)>,
+) -> Json<StreamResponse> {
+    let id = id.trim_end_matches(".json").to_string();
+    
+    info!("Cached search request: type={}, id={}", content_type, id);
+    
+    // Get metadata for better search
+    let search_queries = if id.starts_with("tt") {
+        match state.metadata_client.lookup_by_imdb(&id, &content_type).await {
+            Ok(meta) => {
+                info!("Found metadata: {} ({} queries)", meta.title, meta.search_queries.len());
+                meta.search_queries
+            }
+            Err(_) => vec![id.clone()],
+        }
+    } else {
+        vec![id.clone()]
+    };
+    
+    // Search for torrents
+    let mut all_torrents = Vec::new();
+    
+    for query in &search_queries {
+        info!("Scraping for query: {}", query);
+        let scraped = state.scraper_manager.scrape_all(query, &content_type).await;
+        info!("Scraped {} torrents for query {}", scraped.len(), query);
+        all_torrents.extend(scraped);
+    }
+    
+    // Remove duplicates and sort by seeders
+    use std::collections::HashSet;
+    let mut seen_hashes = HashSet::new();
+    let mut unique: Vec<ScrapedTorrent> = all_torrents
+        .into_iter()
+        .filter(|t| seen_hashes.insert(t.info_hash.clone()))
+        .collect();
+    
+    unique.sort_by(|a, b| b.seeders.cmp(&a.seeders));
+    
+    // Filter for high quality only
+    let quality_torrents: Vec<ScrapedTorrent> = unique
+        .into_iter()
+        .filter(|t| {
+            let title_upper = t.title.to_uppercase();
+            title_upper.contains("1080P") || 
+            title_upper.contains("2160P") || 
+            title_upper.contains("4K") ||
+            title_upper.contains("UHD") ||
+            title_upper.contains("BLURAY")
+        })
+        .take(15) // Check top 15 for speed
+        .collect();
+    
+    info!("Checking {} quality torrents for cache status", quality_torrents.len());
+    
+    // Check which ones are cached on Real-Debrid
+    let cached_torrents = match state.debrid_client.check_batch_cache(&quality_torrents).await {
+        Ok(torrents) => {
+            let cached: Vec<_> = torrents.into_iter().filter(|t| t.is_cached).collect();
+            info!("Found {} cached torrents", cached.len());
+            cached
+        }
+        Err(e) => {
+            tracing::error!("Failed to check cache: {}", e);
+            vec![]
+        }
+    };
+    
+    // Convert to Stremio streams
+    let base_url = std::env::var("BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    
+    let streams: Vec<StremioStream> = cached_torrents
+        .into_iter()
+        .map(|t| {
+            let info = TorrentInfo::from_scraped_torrent(&t);
+            let mut stream = StremioStream::from_torrent_info(&info, &base_url);
+            stream.name = format!("[RD]+ ✅ CACHED\n{}", stream.name);
+            stream.behavior_hints = serde_json::json!({
+                "bingeGroup": format!("torrent-{}", t.source),
+                "filename": t.title,
+                "cached": true,
+                "ready": true
             });
             stream
         })

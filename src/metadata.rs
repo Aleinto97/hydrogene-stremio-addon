@@ -66,17 +66,12 @@ impl MetadataClient {
     pub async fn resolve_anime_title(&self, stremio_id: &str) -> Option<String> {
         let parts: Vec<&str> = stremio_id.split(':').collect();
         
-        eprintln!("RESOLVE: Called with stremio_id: {}", stremio_id);
-        eprintln!("RESOLVE: Parts: {:?}", parts);
-        
         match parts.as_slice() {
             // --- CASE: ANILIST via GraphQL ---
             ["anilist", id] | ["anilist", id, _] => {
                 let anime_id = id.parse::<i32>().unwrap_or(0);
-                eprintln!("RESOLVE: AniList ID parsed: {}", anime_id);
                 
                 if anime_id == 0 {
-                    eprintln!("RESOLVE: AniList ID is 0, returning None");
                     return None;
                 }
                 
@@ -84,8 +79,6 @@ impl MetadataClient {
                     "query": "query ($id: Int) { Media (id: $id, type: ANIME) { title { english romaji } } }",
                     "variables": { "id": anime_id }
                 });
-                
-                eprintln!("RESOLVE: AniList posting to {}", ANILIST_API_BASE);
                 
                 match self.client
                     .post(ANILIST_API_BASE)
@@ -95,42 +88,34 @@ impl MetadataClient {
                     .await
                 {
                     Ok(res) if res.status().is_success() => {
-                        eprintln!("RESOLVE: AniList response OK");
                         match res.json::<serde_json::Value>().await {
                             Ok(data) => {
-                                eprintln!("RESOLVE: AniList JSON parsed: {:?}", data["data"]["Media"]["title"]);
                                 // Try English title first, fallback to romaji
                                 let title = data["data"]["Media"]["title"]["english"]
                                     .as_str()
                                     .or_else(|| data["data"]["Media"]["title"]["romaji"].as_str());
                                 
                                 if let Some(t) = title {
-                                    eprintln!("RESOLVE: AniList SUCCESS -> '{}'", t);
                                     return Some(t.to_string());
-                                } else {
-                                    eprintln!("RESOLVE: AniList no title found in response");
                                 }
                             }
                             Err(e) => {
-                                eprintln!("RESOLVE: AniList JSON parse error: {}", e);
+                                tracing::warn!("AniList JSON parse error: {}", e);
                             }
                         }
                     }
                     Ok(res) => {
-                        eprintln!("RESOLVE: AniList bad status: {}", res.status());
+                        tracing::warn!("AniList bad status: {}", res.status());
                     }
                     Err(e) => {
-                        eprintln!("RESOLVE: AniList request error: {}", e);
+                        tracing::warn!("AniList request error: {}", e);
                     }
                 }
             }
             
-            _ => {
-                eprintln!("RESOLVE: Not a recognized anime ID format: {}", stremio_id);
-            }
+            _ => {}
         }
         
-        eprintln!("RESOLVE: Returning None for {}", stremio_id);
         None
     }
 
