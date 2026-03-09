@@ -24,7 +24,7 @@ struct EztvTorrent {
     #[serde(rename = "torrent_hash")]
     hash: Option<String>,
     #[serde(rename = "torrent_title")]
-    title: String,
+    title: Option<String>,
     #[serde(rename = "imdb_id")]
     _imdb_id: Option<String>,
     #[serde(rename = "season")]
@@ -97,8 +97,13 @@ impl EztvScraper {
         let query_lower = query.to_lowercase();
 
         for torrent in eztv_data.torrents {
+            let title = match torrent.title {
+                Some(title) if !title.is_empty() => title,
+                _ => continue,
+            };
+
             // If not searching by IMDB, filter by query text
-            if !query.starts_with("tt") && !torrent.title.to_lowercase().contains(&query_lower) {
+            if !query.starts_with("tt") && !title.to_lowercase().contains(&query_lower) {
                 continue;
             }
 
@@ -120,7 +125,7 @@ impl EztvScraper {
             let magnet_link = format!(
                 "magnet:?xt=urn:btih:{}&dn={}",
                 info_hash,
-                urlencoding::encode(&torrent.title)
+                urlencoding::encode(&title)
             );
 
             // Format season/episode info
@@ -143,7 +148,7 @@ impl EztvScraper {
             };
 
             scraped.push(ScrapedTorrent {
-                title: format!("{}{}", torrent.title, episode_info),
+                title: format!("{}{}", title, episode_info),
                 info_hash,
                 magnet_link,
                 size_bytes,

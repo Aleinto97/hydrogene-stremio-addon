@@ -64,9 +64,13 @@ impl ScraperManager {
         use tracing::{debug, warn};
 
         let query = Self::id_to_query(id);
-        let scraper_timeout = Duration::from_secs(5);
-        let target_results = 100; // Increased for better accuracy
-        let min_scrapers_to_wait = (self.scrapers.len() as f32 * 0.7) as usize; // Wait for 70% of scrapers
+        let is_episode_query = looks_like_episode_query(&query);
+        let scraper_timeout = if is_episode_query {
+            Duration::from_secs(4)
+        } else {
+            Duration::from_secs(5)
+        };
+        let target_results = if is_episode_query { 12 } else { 100 };
 
         let target_scrapers: Vec<_> = self
             .scrapers
@@ -79,6 +83,11 @@ impl ScraperManager {
             .collect();
 
         let num_scrapers = target_scrapers.len();
+        let min_scrapers_to_wait = if is_episode_query {
+            (num_scrapers as f32 * 0.5).ceil() as usize
+        } else {
+            (num_scrapers as f32 * 0.7).ceil() as usize
+        };
         let mut stream = FuturesUnordered::new();
 
         for scraper in &target_scrapers {
@@ -147,6 +156,31 @@ impl ScraperManager {
             id.to_string()
         }
     }
+}
+
+fn looks_like_episode_query(query: &str) -> bool {
+    let query_upper = query.to_uppercase();
+    query_upper.contains('X') && query_upper.chars().any(|c| c.is_ascii_digit())
+        || query_upper.contains("SEASON ")
+        || find_sxxexx_pattern(&query_upper)
+}
+
+fn find_sxxexx_pattern(query_upper: &str) -> bool {
+    let bytes = query_upper.as_bytes();
+
+    for window in bytes.windows(6) {
+        if window[0] == b'S'
+            && window[1].is_ascii_digit()
+            && window[2].is_ascii_digit()
+            && window[3] == b'E'
+            && window[4].is_ascii_digit()
+            && window[5].is_ascii_digit()
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 pub fn parse_size(size_str: &str) -> u64 {

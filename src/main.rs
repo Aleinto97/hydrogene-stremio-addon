@@ -406,13 +406,8 @@ fn score_search_query(
         score += 25;
     }
 
-    if let Some(year) = target_year {
-        if query_lower.contains(&year.to_string()) {
-            score += 20;
-        }
-    }
-
     if let Some(episode) = target_episode {
+        let season_episode_marker = find_season_episode_marker(&query_lower);
         let episode_markers = [
             format!("e{:02}", episode),
             format!("ep{:02}", episode),
@@ -426,9 +421,25 @@ fn score_search_query(
         {
             score += 30;
         }
+
+        if season_episode_marker {
+            score += 30;
+        } else if query_lower.contains(&format!("x{:02}", episode)) {
+            score += 18;
+        }
+
+        if let Some(year) = target_year {
+            if query_lower.contains(&year.to_string()) {
+                score -= 12;
+            }
+        }
+    } else if let Some(year) = target_year {
+        if query_lower.contains(&year.to_string()) {
+            score += 20;
+        }
     }
 
-    score - query.len() as i32 / 8
+    score - query.len() as i32 / if target_episode.is_some() { 5 } else { 8 }
 }
 
 async fn scrape_queries_progressively(
@@ -510,16 +521,16 @@ fn build_query_batches(search_queries: &[String], target_episode: Option<u32>) -
         0 => Vec::new(),
         1 => vec![search_queries.to_vec()],
         _ if target_episode.is_some() => {
-            let mut batches = vec![vec![search_queries[0].clone()]];
-
-            if search_queries.len() > 1 {
-                batches.push(search_queries[1..search_queries.len().min(3)].to_vec());
-            }
+            let mut batches: Vec<Vec<String>> = search_queries
+                .iter()
+                .take(3)
+                .cloned()
+                .map(|query| vec![query])
+                .collect();
 
             if search_queries.len() > 3 {
                 batches.push(search_queries[3..].to_vec());
             }
-
             batches
         }
         2 => vec![search_queries.to_vec()],
@@ -530,6 +541,24 @@ fn build_query_batches(search_queries: &[String], target_episode: Option<u32>) -
             search_queries[4..].to_vec(),
         ],
     }
+}
+
+fn find_season_episode_marker(query_lower: &str) -> bool {
+    let bytes = query_lower.as_bytes();
+
+    for window in bytes.windows(6) {
+        if window[0] == b's'
+            && window[1].is_ascii_digit()
+            && window[2].is_ascii_digit()
+            && window[3] == b'e'
+            && window[4].is_ascii_digit()
+            && window[5].is_ascii_digit()
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn dedupe_torrents_by_hash(torrents: Vec<ScrapedTorrent>) -> Vec<ScrapedTorrent> {
