@@ -20,7 +20,7 @@ struct EztvResponse {
 #[derive(Debug, Deserialize, Clone)]
 struct EztvTorrent {
     #[serde(rename = "torrent_id")]
-    _id: i64,
+    _id: Option<serde_json::Value>,
     #[serde(rename = "torrent_hash")]
     hash: String,
     #[serde(rename = "torrent_title")]

@@ -18,6 +18,7 @@ const FLARESOLVERR_URL: &str = "http://localhost:8191/v1";
 pub struct X1337Scraper {
     client: Client,
     flaresolverr_enabled: bool,
+    flaresolverr_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,8 +53,11 @@ impl X1337Scraper {
         let flaresolverr_enabled = std::env::var("USE_FLARESOLVERR")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(true); // Default to true since 1337x needs it
+            
+        let flaresolverr_url = std::env::var("FLARESOLVERR_URL")
+            .unwrap_or_else(|_| "http://localhost:8191/v1".to_string());
         
-        Ok(Self { client, flaresolverr_enabled })
+        Ok(Self { client, flaresolverr_enabled, flaresolverr_url })
     }
 
     async fn fetch_with_flaresolverr(&self, url: &str) -> Result<String> {
@@ -66,7 +70,7 @@ impl X1337Scraper {
         tracing::info!("Using FlareSolverr for: {}", url);
         
         let response = self.client
-            .post(FLARESOLVERR_URL)
+            .post(&self.flaresolverr_url)
             .json(&payload)
             .send()
             .await?;

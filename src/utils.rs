@@ -100,12 +100,67 @@ static EPISODE_REGEX: Lazy<Regex> = Lazy::new(|| {
 /// assert!(is_exact_episode_match("Show s01e02 1080p", 1, 2)); // Case-insensitive
 /// ```
 pub fn is_exact_episode_match(title: &str, season: u32, episode: u32) -> bool {
-    EPISODE_REGEX.captures_iter(title).any(|caps| {
+    let title_upper = title.to_uppercase();
+    
+    // 1. Check for explicit SxxExx (most reliable)
+    if let Some(_caps) = EPISODE_REGEX.captures(&title_upper) {
+        let mut matched_any = false;
+        let mut matched_wrong = false;
+        
+        // Check all SxxExx occurrences in title
+        for caps in EPISODE_REGEX.captures_iter(&title_upper) {
+            let matched_season = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
+            let matched_episode = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+            
+            if matched_season == Some(season) && matched_episode == Some(episode) {
+                matched_any = true;
+            } else if matched_season == Some(season) {
+                // Same season but different episode
+                matched_wrong = true;
+            }
+        }
+        
+        if matched_any { return true; }
+        if matched_wrong { return false; }
+    }
+    
+    // 2. Check for Season Packs (S01, Season 1)
+    // Compiled on the fly for simplicity as this is not called millions of times per second
+    let season_regex = Regex::new(r"(?i)\b(?:S|SEASON\s*)(\d{1,2})\b").unwrap();
+    let mut is_season_match = false;
+    for caps in season_regex.captures_iter(&title_upper) {
         let matched_season = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
-        let matched_episode = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+        if matched_season == Some(season) {
+            is_season_match = true;
+            break;
+        }
+    }
+    
+    if is_season_match {
+        // If it's a season match, make sure it doesn't specify a DIFFERENT episode
+        // using other common episode markers
+        let ep_marker_regex = Regex::new(r"(?i)\b(?:E|EP|EPISODE| -)\s*(\d{1,3})\b").unwrap();
+        if let Some(caps) = ep_marker_regex.captures(&title_upper) {
+            let matched_ep = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
+            if matched_ep != Some(episode) {
+                return false; // Specifically a different episode
+            }
+        }
+        return true; // It's the right season and no conflicting episode info
+    }
 
-        matched_season == Some(season) && matched_episode == Some(episode)
-    })
+    // 3. Anime absolute numbering or just "01" (common for season 1)
+    if season == 1 || season == 0 {
+        let ep_regex = Regex::new(r"(?i)(?:^|[\s\[\-_])(?:E|EP|EPISODE| -)?\s*(\d{1,3})(?:[\s\]\-_]|$)").unwrap();
+        for caps in ep_regex.captures_iter(&title_upper) {
+            let matched_ep = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
+            if matched_ep == Some(episode) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

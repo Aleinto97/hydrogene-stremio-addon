@@ -128,14 +128,14 @@ async fn timeout_middleware(
         return next.run(req).await;
     }
     
-    // Apply 10 second timeout for stream requests (fast response is critical)
+    // Apply 15 second timeout for stream requests (fast response is critical)
     match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(15),
         next.run(req)
     ).await {
         Ok(response) => response,
         Err(_) => {
-            tracing::warn!("Request timeout for {} after 10s", uri);
+            tracing::warn!("Request timeout for {} after 15s", uri);
             // Return empty streams on timeout
             let body = axum::body::Body::from(r#"{"streams": []}"#);
             axum::response::Response::builder()
@@ -380,17 +380,26 @@ async fn stream_handler(
             vec![metadata_id.clone()]
         };
 
-        // Try scraping with different search queries
+        // Scrape all queries in parallel
+        use futures::stream::{FuturesUnordered, StreamExt};
+        let mut stream = FuturesUnordered::new();
         let mut all_torrents = Vec::new();
         
         for query in &search_queries {
-            info!("Scraping for query: {}", query);
-            let scraped = state.scraper_manager.scrape_all(query, &content_type).await;
+            let manager = state.scraper_manager.clone();
+            let q = query.clone();
+            let ct = content_type.clone();
+            
+            stream.push(async move {
+                info!("Scraping for query: {}", q);
+                let scraped = manager.scrape_all(&q, &ct).await;
+                (q, scraped)
+            });
+        }
+        
+        while let Some((query, scraped)) = stream.next().await {
             info!("Scraper found {} results for query: {}", scraped.len(), query);
             all_torrents.extend(scraped);
-            
-            // Small delay between queries to avoid rate limiting
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
         
         // Remove duplicates and sort
@@ -437,27 +446,39 @@ async fn stream_handler(
         .unwrap_or(1);
     
     let total_scraped = torrents.len();
-    let filtered_torrents: Vec<ScrapedTorrent> = torrents
+    let mut filtered_torrents: Vec<ScrapedTorrent> = torrents
         .into_iter()
         .filter(|t| t.seeders >= min_seeders) // Filter out dead torrents
         .filter(|t| {
-            let title_upper = t.title.to_uppercase();
-            // Only allow 1080p, 2160p, 4K, UHD
-            let has_1080p = title_upper.contains("1080P");
-            let has_2160p = title_upper.contains("2160P");
-            let has_4k = title_upper.contains("4K") || title_upper.contains("UHD");
-            has_1080p || has_2160p || has_4k
-        })
-        .filter(|t| {
             // Filter by season/episode if we have target info
             if let (Some(target_season), Some(target_episode)) = (target_season, target_episode) {
-                // Use regex with word boundaries to prevent false matches (e.g., S01E01 matching S01E016)
+                // Use the improved episode matching logic
                 utils::is_exact_episode_match(&t.title, target_season, target_episode)
             } else {
                 true // No specific season/episode, include all
             }
         })
         .collect();
+    
+    // Quality filter: prefer 1080p+, but allow 720p/any if none found
+    let high_quality: Vec<ScrapedTorrent> = filtered_torrents
+        .iter()
+        .filter(|t| {
+            let title_upper = t.title.to_uppercase();
+            title_upper.contains("1080P") || 
+            title_upper.contains("2160P") || 
+            title_upper.contains("4K") || 
+            title_upper.contains("UHD") ||
+            (title_upper.contains("BLURAY") && !title_upper.contains("720P"))
+        })
+        .cloned()
+        .collect();
+        
+    if !high_quality.is_empty() {
+        filtered_torrents = high_quality;
+    } else {
+        info!("No high quality (1080p+) torrents found, allowing 720p/SD");
+    }
     
     info!("Total unique torrents: {}, Filtered (quality/episode): {}", total_scraped, filtered_torrents.len());
     if filtered_torrents.is_empty() && total_scraped > 0 {
