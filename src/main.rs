@@ -79,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/manifest.json", get(manifest_handler))
         .route("/stream/:type/:id.json", get(stream_handler))
         .route("/cached/:type/:id.json", get(cached_handler))
-        .route("/resolve/:hash", get(resolve_handler))
+        .route("/resolve/:hash/:id", get(resolve_handler))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &axum::http::Request<_>| {
@@ -511,6 +511,10 @@ async fn stream_handler(
         .map(|t| {
             let info = TorrentInfo::from_scraped_torrent(&t);
             let mut stream = StremioStream::from_torrent_info(&info, &base_url);
+            
+            // Override resolve URL to include the Stremio ID for episode selection in packs
+            stream.url = Some(format!("{}/resolve/{}/{}", base_url, t.info_hash, id));
+            
             // Aggiungi [RD] all'inizio del name per indicare Real-Debrid
             stream.name = format!("[RD]+\n{}", stream.name);
             stream.behavior_hints = serde_json::json!({
@@ -604,6 +608,10 @@ async fn cached_handler(
         .map(|t| {
             let info = TorrentInfo::from_scraped_torrent(&t);
             let mut stream = StremioStream::from_torrent_info(&info, &base_url);
+            
+            // Override resolve URL to include the Stremio ID for episode selection in packs
+            stream.url = Some(format!("{}/resolve/{}/{}", base_url, t.info_hash, id));
+            
             stream.name = format!("[RD]+ ✅ CACHED\n{}", stream.name);
             stream.behavior_hints = serde_json::json!({
                 "bingeGroup": format!("torrent-{}", t.source),
@@ -620,15 +628,41 @@ async fn cached_handler(
 
 async fn resolve_handler(
     State(state): State<AppState>,
-    Path(hash): Path<String>,
+    Path((hash, id)): Path<(String, String)>,
 ) -> Result<Redirect, (axum::http::StatusCode, String)> {
-    info!("Resolve request for hash: {}", hash);
+    info!("Resolve request for hash: {}, id: {}", hash, id);
+    
+    // Parse season and episode from ID if present
+    let (season, episode) = if id.contains(':') && !id.starts_with("anilist:") {
+        let parts: Vec<&str> = id.split(':').collect();
+        if parts.len() >= 3 {
+            let s = parts[1].parse::<u32>().ok();
+            let e = parts[2].parse::<u32>().ok();
+            (s, e)
+        } else {
+            (None, None)
+        }
+    } else if id.starts_with("anilist:") {
+        // anilist:ID:EP
+        let parts: Vec<&str> = id.split(':').collect();
+        if parts.len() >= 3 {
+            (Some(1), parts[2].parse::<u32>().ok())
+        } else {
+            (Some(1), None)
+        }
+    } else {
+        (None, None)
+    };
+    
+    if season.is_some() || episode.is_some() {
+        info!("Target for pack selection: S{:?}E{:?}", season, episode);
+    }
 
     // Add magnet to RD and check immediate status (no pre-check)
     // Longer timeout for user clicks - up to 5 minutes for download
     match tokio::time::timeout(
         std::time::Duration::from_secs(300), // 5 minutes
-        state.debrid_client.resolve_magnet_with_status(&hash)
+        state.debrid_client.resolve_magnet_with_status(&hash, season, episode)
     ).await {
         Ok(Ok(ResolveResult::Ready(video_url))) => {
             info!("Torrent {} ready, redirecting to video", hash);

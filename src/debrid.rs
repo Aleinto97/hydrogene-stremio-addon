@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde::Deserialize;
 use anyhow::{Result, anyhow};
-use tracing::{info, debug};
+use tracing::{info, debug, warn};
 use crate::scrapers::ScrapedTorrent;
 
 const RD_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
@@ -187,7 +187,7 @@ impl RealDebridClient {
         Ok(())
     }
 
-    pub async fn resolve_magnet(&self, info_hash: &str) -> Result<String> {
+    pub async fn resolve_magnet(&self, info_hash: &str, season: Option<u32>, episode: Option<u32>) -> Result<String> {
         let magnet = format!("magnet:?xt=urn:btih:{}", info_hash);
         
         info!("Adding magnet to Real-Debrid: {}", info_hash);
@@ -200,9 +200,9 @@ impl RealDebridClient {
         let torrent_info = self.wait_for_metadata(&torrent_id).await?;
         info!("Torrent metadata received: {} files", torrent_info.files.len());
         
-        // Step 3: Select the main video file
-        let main_video_id = self.select_main_video(&torrent_info)?;
-        info!("Selected main video file: ID {}", main_video_id);
+        // Step 3: Select the best video file
+        let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
+        info!("Selected best video file: ID {}", main_video_id);
         
         self.select_files(&torrent_id, &main_video_id.to_string()).await?;
         
@@ -221,7 +221,12 @@ impl RealDebridClient {
         }
     }
 
-    pub async fn resolve_magnet_with_status(&self, info_hash: &str) -> Result<ResolveResult> {
+    pub async fn resolve_magnet_with_status(
+        &self, 
+        info_hash: &str, 
+        season: Option<u32>, 
+        episode: Option<u32>
+    ) -> Result<ResolveResult> {
         let magnet = format!("magnet:?xt=urn:btih:{}", info_hash);
         
         info!("Adding magnet to Real-Debrid: {}", info_hash);
@@ -238,14 +243,18 @@ impl RealDebridClient {
         if torrent_info.status == "downloaded" {
             info!("Torrent is already cached/downloaded");
             // Select and unrestrict immediately
-            let main_video_id = self.select_main_video(&torrent_info)?;
+            let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
             self.select_files(&torrent_id, &main_video_id.to_string()).await?;
             
-            if let Some(link) = torrent_info.links.first() {
+            // Re-fetch to get links
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            let updated_info = self.get_torrent_info(&torrent_id).await?;
+            
+            if let Some(link) = updated_info.links.first() {
                 let video_url = self.unrestrict_link(link).await?;
                 return Ok(ResolveResult::Ready(video_url));
             } else {
-                return Err(anyhow!("No links available in cached torrent"));
+                return Err(anyhow!("No links available in cached torrent after selection"));
             }
         }
         
@@ -255,7 +264,7 @@ impl RealDebridClient {
         // If we have files but haven't selected them yet, select them now
         if torrent_info.status == "waiting_files_selection" && !torrent_info.files.is_empty() {
             info!("Torrent needs file selection, selecting main video...");
-            let main_video_id = self.select_main_video(&torrent_info)?;
+            let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
             self.select_files(&torrent_id, &main_video_id.to_string()).await?;
             
             // Get updated info after selection
@@ -269,9 +278,9 @@ impl RealDebridClient {
             "downloaded" => {
                 info!("Torrent downloaded/cached");
                 
-                // Ensure files are select (in case it was already downloaded but not selected)
+                // Ensure files are selected (in case it was already downloaded but not selected)
                 if torrent_info.links.is_empty() {
-                    let main_video_id = self.select_main_video(&torrent_info)?;
+                    let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
                     self.select_files(&torrent_id, &main_video_id.to_string()).await?;
                     // Re-fetch to get links
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -420,7 +429,7 @@ impl RealDebridClient {
         }
     }
 
-    fn select_main_video(&self, info: &RDTorrentInfo) -> Result<i64> {
+    fn select_best_file(&self, info: &RDTorrentInfo, season: Option<u32>, episode: Option<u32>) -> Result<i64> {
         let video_extensions = [
             ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".mts", ".m2ts",
             ".mpg", ".mpeg", ".wmv", ".flv", ".f4v", ".3gp", ".3g2", ".ogv", ".ogm"
@@ -443,6 +452,23 @@ impl RealDebridClient {
 
         if videos.is_empty() {
             return Err(anyhow!("No video files found in torrent"));
+        }
+
+        // --- EPISODE SELECTION LOGIC ---
+        if let (Some(s), Some(e)) = (season, episode) {
+            info!("Looking for S{:02}E{:02} in torrent files...", s, e);
+            
+            // Try to find exact episode match in path
+            let best_match = videos.iter().find(|v| {
+                crate::utils::is_exact_episode_match(&v.path, s, e)
+            });
+            
+            if let Some(found) = best_match {
+                info!("Found matching episode file: {}", found.path);
+                return Ok(found.id);
+            }
+            
+            warn!("Episode S{:02}E{:02} not explicitly found in files, falling back to largest file", s, e);
         }
 
         // Sort by size, pick largest (main video is usually the biggest)
