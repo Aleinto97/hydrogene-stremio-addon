@@ -356,7 +356,16 @@ async fn stream_handler(
         })
         .collect();
 
-    scored_torrents.sort_by(|a, b| b.1.cmp(&a.1));
+    scored_torrents.sort_by(|a, b| {
+        let a_quality = quality_bucket(&a.0.title);
+        let b_quality = quality_bucket(&b.0.title);
+
+        b_quality
+            .cmp(&a_quality)
+            .then_with(|| b.0.size_bytes.cmp(&a.0.size_bytes))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.0.seeders.cmp(&a.0.seeders))
+    });
 
     let sorted_torrents: Vec<ScrapedTorrent> = scored_torrents
         .into_iter()
@@ -440,6 +449,22 @@ fn score_search_query(
     }
 
     score - query.len() as i32 / if target_episode.is_some() { 5 } else { 8 }
+}
+
+fn quality_bucket(title: &str) -> i32 {
+    let title_upper = title.to_uppercase();
+
+    if title_upper.contains("2160P") || title_upper.contains("4K") || title_upper.contains("UHD") {
+        5
+    } else if title_upper.contains("1080P") {
+        4
+    } else if title_upper.contains("720P") {
+        3
+    } else if title_upper.contains("480P") {
+        2
+    } else {
+        1
+    }
 }
 
 async fn scrape_queries_progressively(
