@@ -103,7 +103,6 @@ impl NyaaScraper {
                                 leechers,
                                 source: if is_nsfw { "Sukebei".to_string() } else { "Nyaa".to_string() },
                                 category: current_item.category.clone(),
-                                is_cached: false,
                             });
                         }
                         in_item = false;

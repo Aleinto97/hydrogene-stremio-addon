@@ -78,7 +78,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(root_handler))
         .route("/manifest.json", get(manifest_handler))
         .route("/stream/:type/:id.json", get(stream_handler))
-        .route("/cached/:type/:id.json", get(cached_handler))
         .route("/resolve/:hash/:id", get(resolve_handler))
         .layer(
             TraceLayer::new_for_http()
@@ -502,8 +501,8 @@ async fn stream_handler(
         }
     });
 
-    // Keep top 20 results
-    sorted_torrents.truncate(20);
+    // Keep top results for "accuratezza pura" (pure comprehensiveness)
+    sorted_torrents.truncate(100);
 
     // Convert to Stremio streams using new formatter
     let streams: Vec<StremioStream> = sorted_torrents
@@ -528,103 +527,7 @@ async fn stream_handler(
     Json(StreamResponse { streams })
 }
 
-// New handler that only shows torrents already cached on Real-Debrid
-async fn cached_handler(
-    State(state): State<AppState>,
-    Path((content_type, id)): Path<(String, String)>,
-) -> Json<StreamResponse> {
-    let id = id.trim_end_matches(".json").to_string();
-    
-    info!("Cached search request: type={}, id={}", content_type, id);
-    
-    // Get metadata for better search
-    let search_queries = if id.starts_with("tt") {
-        match state.metadata_client.lookup_by_imdb(&id, &content_type).await {
-            Ok(meta) => {
-                info!("Found metadata: {} ({} queries)", meta.title, meta.search_queries.len());
-                meta.search_queries
-            }
-            Err(_) => vec![id.clone()],
-        }
-    } else {
-        vec![id.clone()]
-    };
-    
-    // Search for torrents
-    let mut all_torrents = Vec::new();
-    
-    for query in &search_queries {
-        info!("Scraping for query: {}", query);
-        let scraped = state.scraper_manager.scrape_all(query, &content_type).await;
-        info!("Scraped {} torrents for query {}", scraped.len(), query);
-        all_torrents.extend(scraped);
-    }
-    
-    // Remove duplicates and sort by seeders
-    use std::collections::HashSet;
-    let mut seen_hashes = HashSet::new();
-    let mut unique: Vec<ScrapedTorrent> = all_torrents
-        .into_iter()
-        .filter(|t| seen_hashes.insert(t.info_hash.clone()))
-        .collect();
-    
-    unique.sort_by(|a, b| b.seeders.cmp(&a.seeders));
-    
-    // Filter for high quality only
-    let quality_torrents: Vec<ScrapedTorrent> = unique
-        .into_iter()
-        .filter(|t| {
-            let title_upper = t.title.to_uppercase();
-            title_upper.contains("1080P") || 
-            title_upper.contains("2160P") || 
-            title_upper.contains("4K") ||
-            title_upper.contains("UHD") ||
-            title_upper.contains("BLURAY")
-        })
-        .take(15) // Check top 15 for speed
-        .collect();
-    
-    info!("Checking {} quality torrents for cache status", quality_torrents.len());
-    
-    // Check which ones are cached on Real-Debrid
-    let cached_torrents = match state.debrid_client.check_batch_cache(&quality_torrents).await {
-        Ok(torrents) => {
-            let cached: Vec<_> = torrents.into_iter().filter(|t| t.is_cached).collect();
-            info!("Found {} cached torrents", cached.len());
-            cached
-        }
-        Err(e) => {
-            tracing::error!("Failed to check cache: {}", e);
-            vec![]
-        }
-    };
-    
-    // Convert to Stremio streams
-    let base_url = std::env::var("BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
-    
-    let streams: Vec<StremioStream> = cached_torrents
-        .into_iter()
-        .map(|t| {
-            let info = TorrentInfo::from_scraped_torrent(&t);
-            let mut stream = StremioStream::from_torrent_info(&info, &base_url);
-            
-            // Override resolve URL to include the Stremio ID for episode selection in packs
-            stream.url = Some(format!("{}/resolve/{}/{}", base_url, t.info_hash, id));
-            
-            stream.name = format!("[RD]+ ✅ CACHED\n{}", stream.name);
-            stream.behavior_hints = serde_json::json!({
-                "bingeGroup": format!("torrent-{}", t.source),
-                "filename": t.title,
-                "cached": true,
-                "ready": true
-            });
-            stream
-        })
-        .collect();
 
-    Json(StreamResponse { streams })
-}
 
 async fn resolve_handler(
     State(state): State<AppState>,

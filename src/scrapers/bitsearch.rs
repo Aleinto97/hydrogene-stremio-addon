@@ -108,7 +108,6 @@ impl BitsearchScraper {
                 leechers: torrent.leechers,
                 source: "Bitsearch".to_string(),
                 category,
-                is_cached: false,
             });
         }
         

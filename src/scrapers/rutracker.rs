@@ -149,7 +149,6 @@ impl RuTrackerScraper {
                 leechers,
                 source: "RuTracker".to_string(),
                 category,
-                is_cached: false,
             });
         }
         

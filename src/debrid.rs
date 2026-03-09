@@ -1,8 +1,7 @@
 use reqwest::Client;
 use serde::Deserialize;
 use anyhow::{Result, anyhow};
-use tracing::{info, debug, warn};
-use crate::scrapers::ScrapedTorrent;
+use tracing::{info, warn};
 
 const RD_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
 
@@ -57,24 +56,6 @@ struct RDUnrestrictResponse {
     streamable: i64,
 }
 
-#[derive(Debug, Deserialize)]
-struct RDInstantAvailability {
-    #[serde(flatten)]
-    hashes: std::collections::HashMap<String, Vec<RDFileVariant>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RDFileVariant {
-    files: Option<Vec<RDVariantFile>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RDVariantFile {
-    id: i64,
-    path: String,
-    size: i64,
-}
-
 #[derive(Debug)]
 pub enum ResolveResult {
     Ready(String),      // URL video pronto
@@ -93,98 +74,6 @@ impl RealDebridClient {
             .build()?;
 
         Ok(Self { client, api_key })
-    }
-
-    pub async fn check_batch_cache(&self, torrents: &[ScrapedTorrent]) -> Result<Vec<ScrapedTorrent>> {
-        if torrents.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Since instantAvailability endpoint is disabled (error 37), 
-        // we check cache by adding torrents and checking their status
-        // Rate limiting: wait 2s between each torrent to avoid "too_many_requests"
-        let mut updated = Vec::new();
-        let mut cached_count = 0;
-        let delay = tokio::time::Duration::from_millis(2000);
-
-        for (idx, torrent) in torrents.iter().enumerate() {
-            if idx > 0 {
-                // Add delay between requests to avoid rate limiting
-                tokio::time::sleep(delay).await;
-            }
-            
-            let is_cached = self.check_single_cache(&torrent.info_hash).await?;
-            let mut t = torrent.clone();
-            t.is_cached = is_cached;
-            if is_cached {
-                cached_count += 1;
-            }
-            updated.push(t);
-            
-            debug!("Checked {}/{}: {} (cached: {})", idx + 1, torrents.len(), 
-                   &torrent.info_hash[..8.min(torrent.info_hash.len())], is_cached);
-        }
-
-        info!("Batch cache check: {}/{} cached", cached_count, updated.len());
-        Ok(updated)
-    }
-
-    /// Check if a single torrent is cached by adding it to RD and checking status
-    /// This works around the disabled instantAvailability endpoint
-    pub async fn check_single_cache(&self, info_hash: &str) -> Result<bool> {
-        let magnet = format!("magnet:?xt=urn:btih:{}", info_hash);
-        
-        // Add magnet to RD
-        let torrent_id = match self.add_magnet(&magnet).await {
-            Ok(id) => id,
-            Err(e) => {
-                debug!("Failed to add magnet {}: {}", info_hash, e);
-                return Ok(false);
-            }
-        };
-
-        // Wait a short time for RD to determine if it's cached
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-        // Get torrent info
-        let info = match self.get_torrent_info(&torrent_id).await {
-            Ok(info) => info,
-            Err(e) => {
-                debug!("Failed to get info for {}: {}", info_hash, e);
-                // Delete the torrent we just added
-                let _ = self.delete_torrent(&torrent_id).await;
-                return Ok(false);
-            }
-        };
-
-        // Check if files are immediately available (cached) or if we need to wait for metadata
-        let is_cached = !info.files.is_empty() && 
-            (info.status == "downloaded" || info.status == "waiting_files_selection");
-
-        // Delete the torrent to avoid cluttering user's account
-        // Only delete if it's not already fully downloaded (which would be useful to keep)
-        if info.status != "downloaded" {
-            let _ = self.delete_torrent(&torrent_id).await;
-        }
-
-        Ok(is_cached)
-    }
-
-    async fn delete_torrent(&self, torrent_id: &str) -> Result<()> {
-        let url = format!("{}/torrents/delete/{}", RD_API_BASE, torrent_id);
-        
-        let response = self.client
-            .delete(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let text = response.text().await?;
-            return Err(anyhow!("Failed to delete torrent: {}", text));
-        }
-
-        Ok(())
     }
 
     pub async fn resolve_magnet(&self, info_hash: &str, season: Option<u32>, episode: Option<u32>) -> Result<String> {

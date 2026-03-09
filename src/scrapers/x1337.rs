@@ -156,7 +156,6 @@ impl X1337Scraper {
                         leechers,
                         source: "1337x".to_string(),
                         category: format!("uploader: {}", uploader),
-                        is_cached: false,
                     });
                 }
             }

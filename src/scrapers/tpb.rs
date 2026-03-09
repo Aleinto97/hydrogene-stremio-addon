@@ -103,7 +103,6 @@ impl TPBScraper {
                 leechers,
                 source: "TPB".to_string(),
                 category,
-                is_cached: false,
             });
         }
         

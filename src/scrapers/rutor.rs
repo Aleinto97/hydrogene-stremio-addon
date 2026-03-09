@@ -133,7 +133,6 @@ impl RutorScraper {
                 leechers,
                 source: "Rutor".to_string(),
                 category,
-                is_cached: false,
             });
         }
         

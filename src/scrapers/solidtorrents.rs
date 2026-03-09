@@ -90,7 +90,6 @@ impl SolidScraper {
                 leechers: torrent.leechers,
                 source: "SolidTorrents".to_string(),
                 category: torrent.category,
-                is_cached: false,
             });
         }
         

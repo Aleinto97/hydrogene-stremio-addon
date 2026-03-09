@@ -142,7 +142,6 @@ impl YtsScraper {
                     leechers: torrent.peers,
                     source: "YTS".to_string(),
                     category,
-                    is_cached: false,
                 });
             }
         }

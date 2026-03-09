@@ -117,7 +117,6 @@ impl NekoBtScraper {
                 leechers: torrent.leechers,
                 source: "NekoBT".to_string(),
                 category: "Anime".to_string(),
-                is_cached: false,
             });
         }
         
@@ -240,7 +239,6 @@ impl NekoBtScraper {
                     leechers,
                     source: "NekoBT".to_string(),
                     category: "Anime".to_string(),
-                    is_cached: false,
                 });
             }
 
@@ -271,7 +269,6 @@ impl NekoBtScraper {
                                 leechers: 0,
                                 source: "NekoBT".to_string(),
                                 category: "Anime".to_string(),
-                                is_cached: false,
                             });
                         }
                     }

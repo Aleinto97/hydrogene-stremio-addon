@@ -25,7 +25,6 @@ pub struct ScrapedTorrent {
     pub leechers: i32,
     pub source: String,
     pub category: String,
-    pub is_cached: bool,
 }
 
 #[async_trait]
@@ -62,10 +61,13 @@ impl ScraperManager {
     pub async fn scrape_all(&self, id: &str, content_type: &str) -> Vec<ScrapedTorrent> {
         use futures::stream::{FuturesUnordered, StreamExt};
         use tokio::time::{timeout, Duration};
-        use tracing::warn;
+        use tracing::{warn, debug};
 
         let query = Self::id_to_query(id);
+        // Extended timeout for individual scrapers, but we'll return early if we have enough
         let scraper_timeout = Duration::from_secs(15);
+        let target_results = 40;
+        let min_scrapers_to_wait = (self.scrapers.len() as f32 * 0.6) as usize; // Wait for at least 60% of scrapers
 
         let target_scrapers: Vec<_> = self.scrapers
             .iter()
@@ -78,6 +80,7 @@ impl ScraperManager {
             })
             .collect();
 
+        let num_scrapers = target_scrapers.len();
         let mut stream = FuturesUnordered::new();
 
         for scraper in &target_scrapers {
@@ -88,15 +91,15 @@ impl ScraperManager {
             let future = async move {
                 match timeout(scraper_timeout, scraper.search(&query, &content_type)).await {
                     Ok(Ok(results)) => {
-                        info!(scraper = %name, count = results.len(), "completed successfully");
+                        debug!(scraper = %name, count = results.len(), "completed");
                         results
                     }
                     Ok(Err(e)) => {
-                        warn!(scraper = %name, error = %e, "scraper failed");
+                        warn!(scraper = %name, error = %e, "failed");
                         vec![]
                     }
                     Err(_) => {
-                        warn!(scraper = %name, timeout_secs = 1, "scraper timed out");
+                        warn!(scraper = %name, "timed out");
                         vec![]
                     }
                 }
@@ -105,13 +108,31 @@ impl ScraperManager {
         }
 
         let mut all_torrents: Vec<ScrapedTorrent> = Vec::new();
-        
-        while let Some(scraper_results) = stream.next().await {
-            all_torrents.extend(scraper_results);
-        }
-
         let mut seen_hashes = HashSet::new();
-        all_torrents.retain(|t| seen_hashes.insert(t.info_hash.clone()));
+        let mut completed_scrapers = 0;
+        
+        // Use a deadline for early exit: if we have enough results, don't wait for slow ones
+        while let Some(scraper_results) = stream.next().await {
+            completed_scrapers += 1;
+            
+            for t in scraper_results {
+                if seen_hashes.insert(t.info_hash.clone()) {
+                    all_torrents.push(t);
+                }
+            }
+            
+            // Early exit conditions:
+            // 1. We have plenty of results
+            // 2. We have a decent amount of results and most scrapers finished
+            if all_torrents.len() >= 60 || 
+               (all_torrents.len() >= 20 && completed_scrapers >= (num_scrapers * 6 / 10)) {
+                if completed_scrapers < num_scrapers {
+                    debug!("returning early from scrapers ({}/{}) with {} results", 
+                           completed_scrapers, num_scrapers, all_torrents.len());
+                }
+                break;
+            }
+        }
         
         all_torrents.sort_by(|a, b| b.seeders.cmp(&a.seeders));
         all_torrents.truncate(50);

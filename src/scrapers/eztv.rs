@@ -138,7 +138,6 @@ impl EztvScraper {
                 leechers: torrent.leechers,
                 source: "EZTV".to_string(),
                 category,
-                is_cached: false,
             });
         }
         
