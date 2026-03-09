@@ -1,0 +1,97 @@
+[
+  {
+    "label": "Avatar animated pilot",
+    "content_type": "series",
+    "stremio_id": "tt0417299:1:1",
+    "title_all": ["avatar"],
+    "title_any": ["last airbender"],
+    "forbidden_contains": ["2024", "live action"],
+    "expected_year": 2005,
+    "expected_season": 1,
+    "expected_episode": 1,
+    "accept_season_pack": true,
+    "top_k": 3,
+    "min_streams": 1
+  },
+  {
+    "label": "Avatar live action pilot",
+    "content_type": "series",
+    "stremio_id": "tt9018736:1:1",
+    "title_all": ["avatar"],
+    "title_any": ["last airbender"],
+    "forbidden_contains": ["2005"],
+    "expected_year": 2024,
+    "expected_season": 1,
+    "expected_episode": 1,
+    "accept_season_pack": true,
+    "top_k": 3,
+    "min_streams": 1
+  },
+  {
+    "label": "Death Note anime episode 1",
+    "content_type": "series",
+    "stremio_id": "tt0877057:1:1",
+    "title_all": ["death note"],
+    "expected_year": 2006,
+    "expected_season": 1,
+    "expected_episode": 1,
+    "accept_season_pack": true,
+    "top_k": 3,
+    "min_streams": 1
+  },
+  {
+    "label": "Breaking Bad pilot",
+    "content_type": "series",
+    "stremio_id": "tt0903747:1:1",
+    "title_all": ["breaking bad"],
+    "expected_year": 2008,
+    "expected_season": 1,
+    "expected_episode": 1,
+    "accept_season_pack": true,
+    "top_k": 3,
+    "min_streams": 1
+  },
+  {
+    "label": "Attack on Titan episode 1 via AniList",
+    "content_type": "series",
+    "stremio_id": "anilist:16498:1",
+    "title_any": ["attack on titan", "shingeki no kyojin"],
+    "expected_year": 2013,
+    "expected_season": 1,
+    "expected_episode": 1,
+    "accept_season_pack": true,
+    "top_k": 3,
+    "min_streams": 1
+  },
+  {
+    "label": "The Crow 1994",
+    "content_type": "movie",
+    "stremio_id": "tt0109506",
+    "title_all": ["the crow"],
+    "expected_year": 1994,
+    "require_year_match": true,
+    "forbidden_contains": ["2024"],
+    "top_k": 3,
+    "min_streams": 1
+  },
+  {
+    "label": "The Crow 2024",
+    "content_type": "movie",
+    "stremio_id": "tt1340094",
+    "title_all": ["the crow"],
+    "expected_year": 2024,
+    "require_year_match": true,
+    "forbidden_contains": ["1994"],
+    "top_k": 3,
+    "min_streams": 1
+  },
+  {
+    "label": "Inception 2010",
+    "content_type": "movie",
+    "stremio_id": "tt1375666",
+    "title_all": ["inception"],
+    "expected_year": 2010,
+    "top_k": 3,
+    "min_streams": 1
+  }
+]

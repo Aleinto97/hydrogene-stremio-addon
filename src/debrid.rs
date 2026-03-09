@@ -1,6 +1,6 @@
+use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::Deserialize;
-use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
 const RD_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
@@ -58,10 +58,10 @@ struct RDUnrestrictResponse {
 
 #[derive(Debug)]
 pub enum ResolveResult {
-    Ready(String),      // URL video pronto
-    Downloading(f64),   // In download, progresso percentuale
-    Queued,             // In coda
-    Processing,         // Elaborazione metadati
+    Ready(String),    // URL video pronto
+    Downloading(f64), // In download, progresso percentuale
+    Queued,           // In coda
+    Processing,       // Elaborazione metadati
 }
 
 impl RealDebridClient {
@@ -76,30 +76,42 @@ impl RealDebridClient {
         Ok(Self { client, api_key })
     }
 
-    pub async fn resolve_magnet(&self, info_hash: &str, season: Option<u32>, episode: Option<u32>) -> Result<String> {
+    pub async fn resolve_magnet(
+        &self,
+        info_hash: &str,
+        season: Option<u32>,
+        episode: Option<u32>,
+    ) -> Result<String> {
         let magnet = format!("magnet:?xt=urn:btih:{}", info_hash);
-        
+
         info!("Adding magnet to Real-Debrid: {}", info_hash);
-        
+
         // Step 1: Add magnet
         let torrent_id = self.add_magnet(&magnet).await?;
         info!("Magnet added, torrent ID: {}", torrent_id);
-        
+
         // Step 2: Get torrent info and wait for metadata (max 60 seconds)
         let torrent_info = self.wait_for_metadata(&torrent_id).await?;
-        info!("Torrent metadata received: {} files", torrent_info.files.len());
-        
+        info!(
+            "Torrent metadata received: {} files",
+            torrent_info.files.len()
+        );
+
         // Step 3: Select the best video file
         let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
         info!("Selected best video file: ID {}", main_video_id);
-        
-        self.select_files(&torrent_id, &main_video_id.to_string()).await?;
-        
+
+        self.select_files(&torrent_id, &main_video_id.to_string())
+            .await?;
+
         // Step 4: Wait for download to complete (no timeout limit)
         info!("Waiting for download to complete...");
         let completed_info = self.wait_for_download(&torrent_id).await?;
-        info!("Torrent ready, {} links available", completed_info.links.len());
-        
+        info!(
+            "Torrent ready, {} links available",
+            completed_info.links.len()
+        );
+
         // Step 5: Unrestrict the link
         if let Some(link) = completed_info.links.first() {
             let video_url = self.unrestrict_link(link).await?;
@@ -111,66 +123,71 @@ impl RealDebridClient {
     }
 
     pub async fn resolve_magnet_with_status(
-        &self, 
-        info_hash: &str, 
-        season: Option<u32>, 
-        episode: Option<u32>
+        &self,
+        info_hash: &str,
+        season: Option<u32>,
+        episode: Option<u32>,
     ) -> Result<ResolveResult> {
         let magnet = format!("magnet:?xt=urn:btih:{}", info_hash);
-        
+
         info!("Adding magnet to Real-Debrid: {}", info_hash);
-        
+
         // Step 1: Add magnet
         let torrent_id = self.add_magnet(&magnet).await?;
         info!("Magnet added, torrent ID: {}", torrent_id);
-        
+
         // Step 2: Get torrent info immediately (no wait) to check status
         let torrent_info = self.get_torrent_info(&torrent_id).await?;
         info!("Initial torrent status: {}", torrent_info.status);
-        
+
         // Check if already downloaded (cached)
         if torrent_info.status == "downloaded" {
             info!("Torrent is already cached/downloaded");
             // Select and unrestrict immediately
             let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
-            self.select_files(&torrent_id, &main_video_id.to_string()).await?;
-            
+            self.select_files(&torrent_id, &main_video_id.to_string())
+                .await?;
+
             // Re-fetch to get links
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             let updated_info = self.get_torrent_info(&torrent_id).await?;
-            
+
             if let Some(link) = updated_info.links.first() {
                 let video_url = self.unrestrict_link(link).await?;
                 return Ok(ResolveResult::Ready(video_url));
             } else {
-                return Err(anyhow!("No links available in cached torrent after selection"));
+                return Err(anyhow!(
+                    "No links available in cached torrent after selection"
+                ));
             }
         }
-        
+
         // Step 3: Wait for metadata if needed
         let mut torrent_info = self.wait_for_metadata(&torrent_id).await?;
-        
+
         // If we have files but haven't selected them yet, select them now
         if torrent_info.status == "waiting_files_selection" && !torrent_info.files.is_empty() {
             info!("Torrent needs file selection, selecting main video...");
             let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
-            self.select_files(&torrent_id, &main_video_id.to_string()).await?;
-            
+            self.select_files(&torrent_id, &main_video_id.to_string())
+                .await?;
+
             // Get updated info after selection
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             torrent_info = self.get_torrent_info(&torrent_id).await?;
             info!("Status after file selection: {}", torrent_info.status);
         }
-        
+
         // Check status after metadata and potential selection
         match torrent_info.status.as_str() {
             "downloaded" => {
                 info!("Torrent downloaded/cached");
-                
+
                 // Ensure files are selected (in case it was already downloaded but not selected)
                 if torrent_info.links.is_empty() {
                     let main_video_id = self.select_best_file(&torrent_info, season, episode)?;
-                    self.select_files(&torrent_id, &main_video_id.to_string()).await?;
+                    self.select_files(&torrent_id, &main_video_id.to_string())
+                        .await?;
                     // Re-fetch to get links
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     let updated_info = self.get_torrent_info(&torrent_id).await?;
@@ -182,7 +199,7 @@ impl RealDebridClient {
                     let video_url = self.unrestrict_link(link).await?;
                     return Ok(ResolveResult::Ready(video_url));
                 }
-                
+
                 Err(anyhow!("No links available after download/selection"))
             }
             "downloading" => {
@@ -197,25 +214,22 @@ impl RealDebridClient {
                 info!("Torrent is still processing metadata or waiting selection");
                 Ok(ResolveResult::Processing)
             }
-            "error" => {
-                Err(anyhow!("Torrent error on RD"))
-            }
-            "virus" => {
-                Err(anyhow!("Torrent flagged as virus by RD"))
-            }
-            "dead" => {
-                Err(anyhow!("Torrent is dead (no seeds)"))
-            }
+            "error" => Err(anyhow!("Torrent error on RD")),
+            "virus" => Err(anyhow!("Torrent flagged as virus by RD")),
+            "dead" => Err(anyhow!("Torrent is dead (no seeds)")),
             _ => {
                 // For other statuses, try to wait a bit
-                info!("Unknown status: {}, attempting to wait...", torrent_info.status);
+                info!(
+                    "Unknown status: {}, attempting to wait...",
+                    torrent_info.status
+                );
                 let check_interval = 5;
                 let max_checks = 12; // 1 minute max for this loop
-                
+
                 for check in 0..max_checks {
                     tokio::time::sleep(tokio::time::Duration::from_secs(check_interval)).await;
                     let info = self.get_torrent_info(&torrent_id).await?;
-                    
+
                     match info.status.as_str() {
                         "downloaded" => {
                             info!("Torrent ready after {} checks", check + 1);
@@ -228,12 +242,15 @@ impl RealDebridClient {
                             return Ok(ResolveResult::Downloading(info.progress));
                         }
                         "error" | "virus" | "dead" => {
-                            return Err(anyhow!("Torrent error during background wait: {}", info.status));
+                            return Err(anyhow!(
+                                "Torrent error during background wait: {}",
+                                info.status
+                            ));
                         }
                         _ => continue,
                     }
                 }
-                
+
                 // Timeout - still not ready
                 Ok(ResolveResult::Downloading(torrent_info.progress))
             }
@@ -242,10 +259,11 @@ impl RealDebridClient {
 
     async fn add_magnet(&self, magnet: &str) -> Result<String> {
         let url = format!("{}/torrents/addMagnet", RD_API_BASE);
-        
+
         let form = [("magnet", magnet)];
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .form(&form)
@@ -263,8 +281,9 @@ impl RealDebridClient {
 
     async fn get_torrent_info(&self, torrent_id: &str) -> Result<RDTorrentInfo> {
         let url = format!("{}/torrents/info/{}", RD_API_BASE, torrent_id);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
@@ -285,7 +304,7 @@ impl RealDebridClient {
 
         loop {
             let info = self.get_torrent_info(torrent_id).await?;
-            
+
             match info.status.as_str() {
                 "magnet_conversion" | "waiting_files_selection" | "queued" => {
                     if info.files.is_empty() {
@@ -318,16 +337,29 @@ impl RealDebridClient {
         }
     }
 
-    fn select_best_file(&self, info: &RDTorrentInfo, season: Option<u32>, episode: Option<u32>) -> Result<i64> {
+    fn select_best_file(
+        &self,
+        info: &RDTorrentInfo,
+        season: Option<u32>,
+        episode: Option<u32>,
+    ) -> Result<i64> {
         let video_extensions = [
-            ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".mts", ".m2ts",
-            ".mpg", ".mpeg", ".wmv", ".flv", ".f4v", ".3gp", ".3g2", ".ogv", ".ogm"
+            ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".mts", ".m2ts", ".mpg",
+            ".mpeg", ".wmv", ".flv", ".f4v", ".3gp", ".3g2", ".ogv", ".ogm",
         ];
-        
+
         // Keywords to exclude (sample files, extras, etc.)
-        let exclude_keywords = ["sample", "trailer", "extra", "featurette", "bonus", "behindthescenes"];
-        
-        let mut videos: Vec<&RDFile> = info.files
+        let exclude_keywords = [
+            "sample",
+            "trailer",
+            "extra",
+            "featurette",
+            "bonus",
+            "behindthescenes",
+        ];
+
+        let mut videos: Vec<&RDFile> = info
+            .files
             .iter()
             .filter(|f| {
                 let path_lower = f.path.to_lowercase();
@@ -346,35 +378,42 @@ impl RealDebridClient {
         // --- EPISODE SELECTION LOGIC ---
         if let (Some(s), Some(e)) = (season, episode) {
             info!("Looking for S{:02}E{:02} in torrent files...", s, e);
-            
+
             // Try to find exact episode match in path
-            let best_match = videos.iter().find(|v| {
-                crate::utils::is_exact_episode_match(&v.path, s, e)
-            });
-            
+            let best_match = videos
+                .iter()
+                .find(|v| crate::utils::is_exact_episode_match(&v.path, s, e));
+
             if let Some(found) = best_match {
                 info!("Found matching episode file: {}", found.path);
                 return Ok(found.id);
             }
-            
-            warn!("Episode S{:02}E{:02} not explicitly found in files, falling back to largest file", s, e);
+
+            warn!(
+                "Episode S{:02}E{:02} not explicitly found in files, falling back to largest file",
+                s, e
+            );
         }
 
         // Sort by size, pick largest (main video is usually the biggest)
         videos.sort_by(|a, b| b.bytes.cmp(&a.bytes));
-        
+
         let selected = videos.first().unwrap();
-        info!("Selected video file: {} ({} bytes)", selected.path, selected.bytes);
-        
+        info!(
+            "Selected video file: {} ({} bytes)",
+            selected.path, selected.bytes
+        );
+
         Ok(selected.id)
     }
 
     async fn select_files(&self, torrent_id: &str, file_id: &str) -> Result<()> {
         let url = format!("{}/torrents/selectFiles/{}", RD_API_BASE, torrent_id);
-        
+
         let form = [("files", file_id)];
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .form(&form)
@@ -392,10 +431,10 @@ impl RealDebridClient {
     async fn wait_for_download(&self, torrent_id: &str) -> Result<RDTorrentInfo> {
         let mut attempts = 0;
         let check_interval = 5; // Check every 5 seconds
-        
+
         loop {
             let info = self.get_torrent_info(torrent_id).await?;
-            
+
             match info.status.as_str() {
                 "downloaded" => {
                     return Ok(info);
@@ -407,9 +446,11 @@ impl RealDebridClient {
                     attempts += 1;
                     let progress = info.progress;
                     let status = &info.status;
-                    info!("Torrent {} status: {} ({}% complete, attempt {})", 
-                          torrent_id, status, progress, attempts);
-                    
+                    info!(
+                        "Torrent {} status: {} ({}% complete, attempt {})",
+                        torrent_id, status, progress, attempts
+                    );
+
                     // Check every 5 seconds regardless of status
                     tokio::time::sleep(tokio::time::Duration::from_secs(check_interval)).await;
                 }
@@ -419,10 +460,11 @@ impl RealDebridClient {
 
     async fn unrestrict_link(&self, link: &str) -> Result<String> {
         let url = format!("{}/unrestrict/link", RD_API_BASE);
-        
+
         let form = [("link", link)];
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .form(&form)

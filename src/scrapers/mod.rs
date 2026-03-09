@@ -1,18 +1,18 @@
+use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
-use anyhow::Result;
 use tracing::info;
 
-pub mod nyaa;
-pub mod tpb;
-pub mod rutor;
-pub mod rutracker;
-pub mod x1337;
 pub mod bitsearch;
-pub mod yts;
 pub mod eztv;
 pub mod nekobt;
+pub mod nyaa;
+pub mod rutor;
+pub mod rutracker;
 pub mod solidtorrents;
+pub mod tpb;
+pub mod x1337;
+pub mod yts;
 
 #[derive(Debug, Clone)]
 pub struct ScrapedTorrent {
@@ -61,21 +61,20 @@ impl ScraperManager {
     pub async fn scrape_all(&self, id: &str, content_type: &str) -> Vec<ScrapedTorrent> {
         use futures::stream::{FuturesUnordered, StreamExt};
         use tokio::time::{timeout, Duration};
-        use tracing::{warn, debug};
+        use tracing::{debug, warn};
 
         let query = Self::id_to_query(id);
         let scraper_timeout = Duration::from_secs(5);
-        let target_results = 100;  // Increased for better accuracy
-        let min_scrapers_to_wait = (self.scrapers.len() as f32 * 0.7) as usize;  // Wait for 70% of scrapers
+        let target_results = 100; // Increased for better accuracy
+        let min_scrapers_to_wait = (self.scrapers.len() as f32 * 0.7) as usize; // Wait for 70% of scrapers
 
-        let target_scrapers: Vec<_> = self.scrapers
+        let target_scrapers: Vec<_> = self
+            .scrapers
             .iter()
-            .filter(|s| {
-                match content_type {
-                    "movie" => s.supports_movies(),
-                    "series" => s.supports_series(),
-                    _ => true,
-                }
+            .filter(|s| match content_type {
+                "movie" => s.supports_movies(),
+                "series" => s.supports_series(),
+                _ => true,
             })
             .collect();
 
@@ -109,28 +108,32 @@ impl ScraperManager {
         let mut all_torrents: Vec<ScrapedTorrent> = Vec::new();
         let mut seen_hashes = HashSet::new();
         let mut completed_scrapers = 0;
-        
+
         while let Some(scraper_results) = stream.next().await {
             completed_scrapers += 1;
-            
+
             for t in scraper_results {
                 if seen_hashes.insert(t.info_hash.clone()) {
                     all_torrents.push(t);
                 }
             }
-            
+
             if all_torrents.len() >= target_results && completed_scrapers >= min_scrapers_to_wait {
                 if completed_scrapers < num_scrapers {
-                    debug!("returning early from scrapers ({}/{}) with {} results", 
-                           completed_scrapers, num_scrapers, all_torrents.len());
+                    debug!(
+                        "returning early from scrapers ({}/{}) with {} results",
+                        completed_scrapers,
+                        num_scrapers,
+                        all_torrents.len()
+                    );
                 }
                 break;
             }
         }
-        
+
         all_torrents.sort_by(|a, b| b.seeders.cmp(&a.seeders));
         all_torrents.truncate(50);
-        
+
         info!(total = all_torrents.len(), "scraping completed");
         all_torrents
     }
@@ -149,14 +152,14 @@ impl ScraperManager {
 pub fn parse_size(size_str: &str) -> u64 {
     let size_str = size_str.to_uppercase().replace(",", "");
     let parts: Vec<&str> = size_str.split_whitespace().collect();
-    
+
     if parts.len() != 2 {
         return 0;
     }
-    
+
     let value: f64 = parts[0].parse().unwrap_or(0.0);
     let unit = parts[1];
-    
+
     let multiplier = match unit {
         "B" => 1.0,
         "KB" | "KIB" => 1024.0,
@@ -165,20 +168,28 @@ pub fn parse_size(size_str: &str) -> u64 {
         "TB" | "TIB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
         _ => 1.0,
     };
-    
+
     (value * multiplier) as u64
 }
 
 pub fn extract_info_hash(magnet: &str) -> Option<String> {
     if let Some(start) = magnet.find("xt=urn:btih:") {
         let hash_start = start + 12;
-        let hash_end = magnet[hash_start..].find('&').map(|i| hash_start + i).unwrap_or(magnet.len());
+        let hash_end = magnet[hash_start..]
+            .find('&')
+            .map(|i| hash_start + i)
+            .unwrap_or(magnet.len());
         return Some(magnet[hash_start..hash_end].to_lowercase());
     }
     None
 }
 
 pub fn create_magnet(info_hash: &str, name: &str) -> String {
-    let encoded_name = percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC);
-    format!("magnet:?xt=urn:btih:{}&dn={}", info_hash.to_lowercase(), encoded_name)
+    let encoded_name =
+        percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC);
+    format!(
+        "magnet:?xt=urn:btih:{}&dn={}",
+        info_hash.to_lowercase(),
+        encoded_name
+    )
 }

@@ -1,8 +1,8 @@
+use crate::scrapers::{create_magnet, ScrapedTorrent, Scraper};
+use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use anyhow::Result;
-use crate::scrapers::{Scraper, ScrapedTorrent, create_magnet};
 
 // The Pirate Bay official API - no blocks, no Cloudflare
 const TPB_API: &str = "https://apibay.org";
@@ -35,20 +35,16 @@ impl TPBScraper {
             .timeout(std::time::Duration::from_secs(8))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()?;
-        
+
         Ok(Self { client })
     }
 
     pub async fn search(&self, query: &str, _content_type: &str) -> Result<Vec<ScrapedTorrent>> {
         tracing::info!("TPB API search for: {}", query);
-        
+
         let search_url = format!("{}/q.php?q={}&cat=0", TPB_API, urlencoding::encode(query));
-        
-        let response = match self.client
-            .get(&search_url)
-            .send()
-            .await
-        {
+
+        let response = match self.client.get(&search_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
                 tracing::error!("TPB API request failed: {}", e);
@@ -68,31 +64,31 @@ impl TPBScraper {
                 return Ok(Vec::new());
             }
         };
-        
+
         tracing::info!("TPB API returned {} results", results.len());
-        
+
         let mut torrents = Vec::new();
-        
+
         for result in results {
             // Skip if ID is "0" (no results marker)
             if result.id == "0" {
                 continue;
             }
-            
+
             let size_bytes: u64 = result.size.parse().unwrap_or(0);
             let seeders: i32 = result.seeders.parse().unwrap_or(0);
             let leechers: i32 = result.leechers.parse().unwrap_or(0);
-            
+
             // Skip dead torrents (0 seeders)
             if seeders == 0 {
                 continue;
             }
-            
+
             let info_hash = result.info_hash.to_lowercase();
             let magnet_link = create_magnet(&info_hash, &result.name);
-            
+
             let category = Self::category_name(&result.category_id);
-            
+
             torrents.push(ScrapedTorrent {
                 title: result.name,
                 info_hash,
@@ -105,7 +101,7 @@ impl TPBScraper {
                 category,
             });
         }
-        
+
         tracing::info!("TPB filtered to {} valid torrents", torrents.len());
         Ok(torrents)
     }
@@ -123,7 +119,8 @@ impl TPBScraper {
             "209" => "Video/3D",
             "210" => "Video/Other",
             _ => "Unknown",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 

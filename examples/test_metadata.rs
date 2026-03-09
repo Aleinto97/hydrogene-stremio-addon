@@ -4,9 +4,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let client = Arc::new(Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?);
+    let client = Arc::new(Client::builder().timeout(Duration::from_secs(10)).build()?);
 
     println!("=== TEST METADATA PROVIDERS ===\n");
 
@@ -34,7 +32,10 @@ async fn main() -> anyhow::Result<()> {
     let json: serde_json::Value = resp.json().await?;
     let title = json["tv_results"][0]["name"].as_str().unwrap_or("N/A");
     println!("IMDB: tt0903747 -> TMDB: {}", title);
-    println!("Queries: [{}, \"{} 2008\", \"{} S01E01\", \"{} S1E1\"]\n", title, title, title, title);
+    println!(
+        "Queries: [{}, \"{} 2008\", \"{} S01E01\", \"{} S1E1\"]\n",
+        title, title, title, title
+    );
 
     // Test 3: Anime - Attack on Titan (corretto)
     println!("=== TEST 3: ANIME (Attack on Titan - ID corretto) ===");
@@ -54,7 +55,10 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|| json["data"]["Media"]["title"]["romaji"].as_str())
         .unwrap_or("N/A");
     println!("AniList: 16498 -> {}", title);
-    println!("Queries: [{}, \"{} 01\", \"{} E01\"]\n", title, title, title);
+    println!(
+        "Queries: [{}, \"{} 01\", \"{} E01\"]\n",
+        title, title, title
+    );
 
     // Test 4: Anime - One Piece
     println!("=== TEST 4: ANIME (One Piece) ===");

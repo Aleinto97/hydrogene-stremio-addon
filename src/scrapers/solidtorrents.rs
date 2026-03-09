@@ -1,8 +1,8 @@
+use crate::scrapers::{ScrapedTorrent, Scraper};
+use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use anyhow::Result;
-use crate::scrapers::{Scraper, ScrapedTorrent};
 
 // SolidTorrents API - Public API
 // Docs: https://solidtorrents.to/api
@@ -37,19 +37,19 @@ impl SolidScraper {
             .timeout(std::time::Duration::from_secs(10))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .build()?;
-        
+
         Ok(Self { client })
     }
 
     pub async fn search(&self, query: &str, _content_type: &str) -> Result<Vec<ScrapedTorrent>> {
         tracing::info!("SolidTorrents search for: {}", query);
-        
+
         let search_url = format!(
             "{}/search?q={}&sort=seeders&f-seeders=1",
             SOLID_API,
             urlencoding::encode(query)
         );
-        
+
         let response = match self.client.get(&search_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
@@ -70,16 +70,16 @@ impl SolidScraper {
                 return Ok(Vec::new());
             }
         };
-        
+
         tracing::info!("SolidTorrents returned {} results", data.results.len());
-        
+
         let mut scraped = Vec::new();
-        
+
         for torrent in data.results {
             if torrent.seeders == 0 {
                 continue;
             }
-            
+
             scraped.push(ScrapedTorrent {
                 title: torrent.title,
                 info_hash: torrent.info_hash.to_lowercase(),
@@ -92,7 +92,7 @@ impl SolidScraper {
                 category: torrent.category,
             });
         }
-        
+
         Ok(scraped)
     }
 }

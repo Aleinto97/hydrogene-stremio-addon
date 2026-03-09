@@ -1,8 +1,8 @@
+use crate::scrapers::{ScrapedTorrent, Scraper};
+use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use anyhow::Result;
-use crate::scrapers::{ScrapedTorrent, Scraper};
 
 // EZTV.re API - Official JSON API for TV torrents
 // Simple endpoint that returns latest torrents
@@ -51,26 +51,26 @@ impl EztvScraper {
             .timeout(std::time::Duration::from_secs(10))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .build()?;
-        
+
         Ok(Self { client })
     }
 
     pub async fn search(&self, query: &str, _content_type: &str) -> Result<Vec<ScrapedTorrent>> {
         tracing::info!("EZTV API search for: {}", query);
-        
+
         let search_url = if query.starts_with("tt") {
             // Search by IMDB ID
-            format!("{}?imdb_id={}&limit=100", EZTV_API, query.trim_start_matches("tt"))
+            format!(
+                "{}?imdb_id={}&limit=100",
+                EZTV_API,
+                query.trim_start_matches("tt")
+            )
         } else {
             // Search by query text (EZTV doesn't have a text search API, so we get recent and filter)
             format!("{}?limit=100", EZTV_API)
         };
-        
-        let response = match self.client
-            .get(&search_url)
-            .send()
-            .await
-        {
+
+        let response = match self.client.get(&search_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
                 tracing::error!("EZTV API request failed: {}", e);
@@ -90,23 +90,23 @@ impl EztvScraper {
                 return Ok(Vec::new());
             }
         };
-        
+
         tracing::info!("EZTV API returned {} torrents", eztv_data.count);
-        
+
         let mut scraped = Vec::new();
         let query_lower = query.to_lowercase();
-        
+
         for torrent in eztv_data.torrents {
             // If not searching by IMDB, filter by query text
             if !query.starts_with("tt") && !torrent.title.to_lowercase().contains(&query_lower) {
                 continue;
             }
-            
+
             // Skip dead torrents (0 seeders)
             if torrent.seeders == 0 {
                 continue;
             }
-            
+
             let info_hash = torrent.hash.to_lowercase();
             let size_bytes: u64 = torrent.size_bytes.parse().unwrap_or(0);
             let magnet_link = format!(
@@ -114,20 +114,20 @@ impl EztvScraper {
                 info_hash,
                 urlencoding::encode(&torrent.title)
             );
-            
+
             // Format season/episode info
             let episode_info = if !torrent.season.is_empty() && !torrent.episode.is_empty() {
                 format!(" S{}E{}", torrent.season, torrent.episode)
             } else {
                 String::new()
             };
-            
+
             let category = if !episode_info.is_empty() {
                 "TV/Episode".to_string()
             } else {
                 "TV".to_string()
             };
-            
+
             scraped.push(ScrapedTorrent {
                 title: format!("{}{}", torrent.title, episode_info),
                 info_hash,
@@ -140,7 +140,7 @@ impl EztvScraper {
                 category,
             });
         }
-        
+
         tracing::info!("EZTV filtered to {} valid torrents", scraped.len());
         Ok(scraped)
     }
@@ -165,7 +165,7 @@ impl Scraper for EztvScraper {
     }
 
     fn supports_movies(&self) -> bool {
-        false  // EZTV is TV only
+        false // EZTV is TV only
     }
 
     fn supports_series(&self) -> bool {

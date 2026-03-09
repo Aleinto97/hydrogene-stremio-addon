@@ -1,8 +1,8 @@
+use crate::scrapers::{create_magnet, ScrapedTorrent, Scraper};
+use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use anyhow::Result;
-use crate::scrapers::{Scraper, ScrapedTorrent, create_magnet};
 
 // YTS.mx API - Official JSON API for movie torrents
 // Docs: https://yts.mx/api
@@ -58,7 +58,7 @@ impl YtsScraper {
             .timeout(std::time::Duration::from_secs(10))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .build()?;
-        
+
         Ok(Self { client })
     }
 
@@ -76,25 +76,30 @@ impl YtsScraper {
         Ok(Vec::new())
     }
 
-    pub async fn search_with_mirror(&self, query: &str, mirror: &str) -> Result<Vec<ScrapedTorrent>> {
+    pub async fn search_with_mirror(
+        &self,
+        query: &str,
+        mirror: &str,
+    ) -> Result<Vec<ScrapedTorrent>> {
         tracing::info!("YTS API search for: {} on {}", query, mirror);
-        
+
         // Build API URL - supports both query and IMDB ID
         let search_url = if query.starts_with("tt") {
             // Search by IMDB ID
-            format!("{}/list_movies.json?query_term={}&limit=50&sort_by=seeds&order_by=desc", 
-                mirror, query)
+            format!(
+                "{}/list_movies.json?query_term={}&limit=50&sort_by=seeds&order_by=desc",
+                mirror, query
+            )
         } else {
             // Regular search
-            format!("{}/list_movies.json?query_term={}&limit=50&sort_by=seeds&order_by=desc", 
-                mirror, urlencoding::encode(query))
+            format!(
+                "{}/list_movies.json?query_term={}&limit=50&sort_by=seeds&order_by=desc",
+                mirror,
+                urlencoding::encode(query)
+            )
         };
-        
-        let response = match self.client
-            .get(&search_url)
-            .send()
-            .await
-        {
+
+        let response = match self.client.get(&search_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
                 tracing::error!("YTS API request failed: {}", e);
@@ -114,24 +119,24 @@ impl YtsScraper {
                 return Ok(Vec::new());
             }
         };
-        
+
         let movies = yts_response.data.movies.unwrap_or_default();
         tracing::info!("YTS API returned {} movies", movies.len());
-        
+
         let mut scraped = Vec::new();
-        
+
         for movie in movies {
             for torrent in movie.torrents {
                 // Skip dead torrents (0 seeders)
                 if torrent.seeds == 0 {
                     continue;
                 }
-                
+
                 let info_hash = torrent.hash.to_lowercase();
                 let magnet_link = create_magnet(&info_hash, &movie.title_long);
-                
+
                 let category = format!("Movies/{}p", torrent.quality);
-                
+
                 scraped.push(ScrapedTorrent {
                     title: format!("{} ({})", movie.title_long, torrent.quality),
                     info_hash,
@@ -145,7 +150,7 @@ impl YtsScraper {
                 });
             }
         }
-        
+
         tracing::info!("YTS filtered to {} valid torrents", scraped.len());
         Ok(scraped)
     }
@@ -174,6 +179,6 @@ impl Scraper for YtsScraper {
     }
 
     fn supports_series(&self) -> bool {
-        false  // YTS is movies only
+        false // YTS is movies only
     }
 }

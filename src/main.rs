@@ -1,24 +1,24 @@
 use axum::{
-    routing::get,
-    Router,
     extract::{Path, State},
     response::{Json, Redirect},
+    routing::get,
+    Router,
 };
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{info, error};
 use tower_http::trace::TraceLayer;
+use tracing::{error, info};
 
 use hydrogene::debrid;
 use hydrogene::metadata;
 use hydrogene::scrapers;
 use hydrogene::stremio_format::{StremioStream, TorrentInfo};
-use hydrogene::utils;
-use hydrogene::ResolveResult;
 use hydrogene::MetadataCache;
+use hydrogene::ResolveResult;
 
 use metadata::MetadataClient;
-use scrapers::{ScraperManager, ScrapedTorrent};
+use scrapers::{ScrapedTorrent, ScraperManager};
 
 #[derive(Clone)]
 struct AppState {
@@ -30,7 +30,7 @@ struct AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    
+
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         .add_directive("tower_http=info".parse().unwrap())
@@ -43,21 +43,21 @@ async fn main() -> anyhow::Result<()> {
         .add_directive("h2=info".parse().unwrap())
         .add_directive("rustls=info".parse().unwrap())
         .add_directive("sqlx=warn".parse().unwrap());
-    
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     info!("Starting Stremio Addon Server...");
 
-    let http_client = Arc::new(reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .pool_max_idle_per_host(10)
-        .build()?);
+    let http_client = Arc::new(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .pool_max_idle_per_host(10)
+            .build()?,
+    );
     info!("HTTP client initialized with connection pooling");
 
     let scraper_manager = Arc::new(ScraperManager::new()?);
-    
+
     let debrid_client = Arc::new(debrid::RealDebridClient::new()?);
 
     let metadata_client = if let Ok(database_url) = std::env::var("DATABASE_URL") {
@@ -68,7 +68,10 @@ async fn main() -> anyhow::Result<()> {
                 MetadataClient::new(http_client.clone())?.with_cache(Arc::new(cache))
             }
             Err(e) => {
-                tracing::warn!("Failed to initialize metadata cache: {}. Continuing without cache.", e);
+                tracing::warn!(
+                    "Failed to initialize metadata cache: {}. Continuing without cache.",
+                    e
+                );
                 MetadataClient::new(http_client.clone())?
             }
         }
@@ -89,29 +92,28 @@ async fn main() -> anyhow::Result<()> {
         .route("/stream/:type/:id.json", get(stream_handler))
         .route("/resolve/:hash/:id", get(resolve_handler))
         .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|request: &axum::http::Request<_>| {
-                    let uri = request.uri().to_string();
-                    if uri == "/" {
-                        tracing::Span::none()
-                    } else {
-                        tracing::info_span!(
-                            "request",
-                            method = %request.method(),
-                            uri = %uri,
-                        )
-                    }
-                })
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<_>| {
+                let uri = request.uri().to_string();
+                if uri == "/" {
+                    tracing::Span::none()
+                } else {
+                    tracing::info_span!(
+                        "request",
+                        method = %request.method(),
+                        uri = %uri,
+                    )
+                }
+            }),
         )
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(app_state);
 
     let app = app.layer(axum::middleware::from_fn(timeout_middleware));
-    
+
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "8080".to_string())
         .parse::<u16>()?;
-    
+
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("Server listening on {}", addr);
 
@@ -126,15 +128,16 @@ async fn timeout_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let uri = req.uri().to_string();
-    
-    if uri == "/" || uri == "/manifest.json" || uri.starts_with("/resolve/") || uri.starts_with("/cached/") {
+
+    if uri == "/"
+        || uri == "/manifest.json"
+        || uri.starts_with("/resolve/")
+        || uri.starts_with("/cached/")
+    {
         return next.run(req).await;
     }
-    
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        next.run(req)
-    ).await {
+
+    match tokio::time::timeout(std::time::Duration::from_secs(8), next.run(req)).await {
         Ok(response) => response,
         Err(_) => {
             tracing::warn!("Request timeout for {} after 8s", uri);
@@ -166,14 +169,12 @@ struct Manifest {
 }
 
 async fn manifest_handler() -> Json<Manifest> {
-    let addon_name = std::env::var("ADDON_NAME")
-        .unwrap_or_else(|_| "Hydrogen Torrents".to_string());
+    let addon_name =
+        std::env::var("ADDON_NAME").unwrap_or_else(|_| "Hydrogen Torrents".to_string());
     let addon_desc = std::env::var("ADDON_DESCRIPTION")
         .unwrap_or_else(|_| "High-performance torrent scraper".to_string());
-    let addon_id = std::env::var("ADDON_ID")
-        .unwrap_or_else(|_| "ai.hydrogen.stremio".to_string());
-    let addon_version = std::env::var("ADDON_VERSION")
-        .unwrap_or_else(|_| "0.1.0".to_string());
+    let addon_id = std::env::var("ADDON_ID").unwrap_or_else(|_| "ai.hydrogen.stremio".to_string());
+    let addon_version = std::env::var("ADDON_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
 
     Json(Manifest {
         id: addon_id,
@@ -201,17 +202,17 @@ async fn stream_handler(
     Path((content_type, id)): Path<(String, String)>,
 ) -> Json<StreamResponse> {
     let id = id.trim_end_matches(".json").to_string();
-    
+
     let base_id = id.split(':').next().unwrap_or(&id).to_string();
     let metadata_id = if id.contains(':') && !id.starts_with("anilist:") {
         base_id.clone()
     } else {
         id.clone()
     };
-    
+
     info!("Stream request: type={}, id={}", content_type, id);
 
-    let (torrents, target_year, target_season, target_episode) = {
+    let (torrents, metadata_title, target_year, target_season, target_episode) = {
         let (target_season, target_episode) = if id.contains(':') && !id.starts_with("anilist:") {
             let parts: Vec<&str> = id.split(':').collect();
             if parts.len() >= 3 {
@@ -232,23 +233,13 @@ async fn stream_handler(
 
         let metadata_future = async {
             if metadata_id.starts_with("anilist:") {
-                let parts: Vec<&str> = metadata_id.split(':').collect();
-                let episode = if parts.len() >= 3 {
-                    parts[2].parse::<u32>().ok()
-                } else {
-                    None
-                };
-                
-                match state.metadata_client.lookup_by_imdb(&metadata_id, &content_type).await {
-                    Ok(meta) => {
-                        let mut queries = meta.search_queries;
-                        if let Some(ep) = episode {
-                            let ep_queries = build_anime_episode_queries(&queries, ep);
-                            queries.extend(ep_queries);
-                        }
-                        (queries, meta.year)
-                    }
-                    Err(_) => (vec![metadata_id.clone()], None)
+                match state
+                    .metadata_client
+                    .lookup_by_imdb(&metadata_id, &content_type)
+                    .await
+                {
+                    Ok(meta) => (meta.title, meta.search_queries, meta.year),
+                    Err(_) => (metadata_id.clone(), vec![metadata_id.clone()], None),
                 }
             } else if metadata_id.starts_with("tt") {
                 let full_metadata_id = if id.contains(':') && !id.starts_with("anilist:") {
@@ -256,63 +247,81 @@ async fn stream_handler(
                 } else {
                     metadata_id.clone()
                 };
-                
-                match state.metadata_client.lookup_by_imdb(&full_metadata_id, &content_type).await {
-                    Ok(meta) => (meta.search_queries, meta.year),
+
+                match state
+                    .metadata_client
+                    .lookup_by_imdb(&full_metadata_id, &content_type)
+                    .await
+                {
+                    Ok(meta) => (meta.title, meta.search_queries, meta.year),
                     Err(e) => {
-                        tracing::error!("Metadata lookup failed for {}: {}. Falling back to ID search.", full_metadata_id, e);
-                        (vec![metadata_id.clone()], None)
+                        tracing::error!(
+                            "Metadata lookup failed for {}: {}. Falling back to ID search.",
+                            full_metadata_id,
+                            e
+                        );
+                        (metadata_id.clone(), vec![metadata_id.clone()], None)
                     }
                 }
             } else {
-                (vec![metadata_id.clone()], None)
+                (metadata_id.clone(), vec![metadata_id.clone()], None)
             }
         };
 
-        let (search_queries, target_year) = metadata_future.await;
-        
+        let (metadata_title, search_queries, target_year) = metadata_future.await;
+        let target_year_u32 = target_year.as_ref().and_then(|y| y.parse::<u32>().ok());
+
         let mut search_queries = search_queries;
         search_queries.sort_by(|a, b| {
-            let a_exact = a.to_lowercase().contains(&id.to_lowercase());
-            let b_exact = b.to_lowercase().contains(&id.to_lowercase());
-            b_exact.cmp(&a_exact)
+            let a_score = score_search_query(a, &metadata_title, target_year_u32, target_episode);
+            let b_score = score_search_query(b, &metadata_title, target_year_u32, target_episode);
+            b_score.cmp(&a_score)
         });
         search_queries.dedup();
         search_queries.truncate(8);
 
-        use futures::stream::{FuturesUnordered, StreamExt};
-        let mut stream = FuturesUnordered::new();
-        let mut all_torrents = Vec::new();
-        
-        for query in &search_queries {
-            let manager = state.scraper_manager.clone();
-            let q = query.clone();
-            let ct = content_type.clone();
-            
-            stream.push(async move {
-                info!("Scraping for query: {}", q);
-                let scraped = manager.scrape_all(&q, &ct).await;
-                (q, scraped)
-            });
-        }
-        
-        while let Some((query, scraped)) = stream.next().await {
-            info!("Scraper found {} results for query: {}", scraped.len(), query);
-            all_torrents.extend(scraped);
-        }
-        
-        use std::collections::HashSet;
-        let mut seen_hashes = HashSet::new();
-        let mut unique: Vec<ScrapedTorrent> = all_torrents
-            .into_iter()
-            .filter(|t| seen_hashes.insert(t.info_hash.clone()))
-            .collect();
-        
-        unique.sort_by(|a, b| b.seeders.cmp(&a.seeders));
-        unique.truncate(50);
-        
+        let mut unique = scrape_queries_progressively(
+            state.scraper_manager.clone(),
+            &content_type,
+            &search_queries,
+            &metadata_title,
+            target_year_u32,
+            target_season,
+            target_episode,
+        )
+        .await;
+
+        unique.sort_by(|a, b| {
+            let b_score = hydrogene::calculate_match_score(
+                &metadata_title,
+                target_year_u32,
+                target_season,
+                target_episode,
+                &b.title,
+                b.seeders,
+                b.size_bytes,
+            );
+            let a_score = hydrogene::calculate_match_score(
+                &metadata_title,
+                target_year_u32,
+                target_season,
+                target_episode,
+                &a.title,
+                a.seeders,
+                a.size_bytes,
+            );
+            b_score.cmp(&a_score)
+        });
+        unique.truncate(80);
+
         info!("Found {} unique torrents for {}", unique.len(), id);
-        (unique, target_year, target_season, target_episode)
+        (
+            unique,
+            metadata_title,
+            target_year,
+            target_season,
+            target_episode,
+        )
     };
 
     let base_url = std::env::var("BASE_URL")
@@ -322,61 +331,53 @@ async fn stream_handler(
         .unwrap_or_else(|_| "1".to_string())
         .parse()
         .unwrap_or(1);
-    
+
     let total_scraped = torrents.len();
-    let filtered_torrents: Vec<ScrapedTorrent> = torrents
+
+    // Parse target year from string to u32 for matching
+    let target_year_u32 = target_year.as_ref().and_then(|y| y.parse::<u32>().ok());
+
+    // Score all torrents (don't filter out season packs)
+    let mut scored_torrents: Vec<(ScrapedTorrent, i32)> = torrents
         .into_iter()
         .filter(|t| t.seeders >= min_seeders)
-        .filter(|t| {
-            if let (Some(target_season), Some(target_episode)) = (target_season, target_episode) {
-                utils::is_exact_episode_match(&t.title, target_season, target_episode)
-            } else {
-                true
-            }
-        })
-        .filter(|t| {
-            // Filter by year if available (only for movies/series, not anime)
-            if let Some(year) = &target_year {
-                if !metadata_id.starts_with("anilist:") {
-                    let title_upper = t.title.to_uppercase();
-                    // Check if year is present in the title or filename
-                    if !title_upper.contains(year) {
-                        // If year is not in the title, still accept it but prefer results with year
-                        // We'll handle preference in scoring
-                        return true;
-                    }
-                }
-            }
-            true
-        })
-        .collect();
-    
-    let mut scored_torrents: Vec<(ScrapedTorrent, i32)> = filtered_torrents
-        .into_iter()
         .map(|t| {
-            let score = calculate_quality_score(&t.title, t.seeders, t.size_bytes, &target_year);
+            // Use advanced matching with fuzzy logic
+            let score = hydrogene::calculate_match_score(
+                &metadata_title, // Query title
+                target_year_u32, // Target year
+                target_season,   // Target season
+                target_episode,  // Target episode
+                &t.title,        // Torrent title
+                t.seeders,       // Seeders
+                t.size_bytes,    // Size
+            );
             (t, score)
         })
         .collect();
-    
+
     scored_torrents.sort_by(|a, b| b.1.cmp(&a.1));
-    
+
     let sorted_torrents: Vec<ScrapedTorrent> = scored_torrents
         .into_iter()
         .take(100)
         .map(|(t, _)| t)
         .collect();
 
-    info!("Total unique torrents: {}, Top quality results: {}", total_scraped, sorted_torrents.len());
+    info!(
+        "Total unique torrents: {}, Top quality results: {}",
+        total_scraped,
+        sorted_torrents.len()
+    );
 
     let streams: Vec<StremioStream> = sorted_torrents
         .into_iter()
         .map(|t| {
             let info = TorrentInfo::from_scraped_torrent(&t);
             let mut stream = StremioStream::from_torrent_info(&info, &base_url);
-            
+
             stream.url = Some(format!("{}/resolve/{}/{}", base_url, t.info_hash, id));
-            
+
             stream.name = format!("[RD]+\n{}", stream.name);
             stream.behavior_hints = serde_json::json!({
                 "bingeGroup": format!("torrent-{}", t.source),
@@ -389,65 +390,186 @@ async fn stream_handler(
     Json(StreamResponse { streams })
 }
 
-fn calculate_quality_score(title: &str, seeders: i32, size_bytes: u64, target_year: &Option<String>) -> i32 {
+fn score_search_query(
+    query: &str,
+    metadata_title: &str,
+    target_year: Option<u32>,
+    target_episode: Option<u32>,
+) -> i32 {
+    let query_lower = query.to_lowercase();
+    let metadata_lower = metadata_title.to_lowercase();
     let mut score = 0;
-    let title_upper = title.to_uppercase();
-    
-    // Year matching bonus
+
+    if query_lower == metadata_lower {
+        score += 50;
+    } else if query_lower.starts_with(&metadata_lower) {
+        score += 25;
+    }
+
     if let Some(year) = target_year {
-        if title_upper.contains(year) {
-            score += 20; // Strong bonus for matching year
+        if query_lower.contains(&year.to_string()) {
+            score += 20;
         }
     }
-    
-    if title_upper.contains("2160P") || title_upper.contains("4K") || title_upper.contains("UHD") {
-        score += 100;
-    } else if title_upper.contains("1080P") {
-        score += 80;
-    } else if title_upper.contains("720P") {
-        score += 60;
-    } else if title_upper.contains("480P") || title_upper.contains("360P") {
-        score += 20;
+
+    if let Some(episode) = target_episode {
+        let episode_markers = [
+            format!("e{:02}", episode),
+            format!("ep{:02}", episode),
+            format!(" {:02}", episode),
+            format!(" {}", episode),
+        ];
+
+        if episode_markers
+            .iter()
+            .any(|marker| query_lower.contains(marker))
+        {
+            score += 30;
+        }
     }
-    
-    if title_upper.contains("BLURAY") || title_upper.contains("BDRIP") {
-        score += 30;
-    } else if title_upper.contains("WEB-DL") || title_upper.contains("WEBDL") {
-        score += 25;
-    } else if title_upper.contains("HDTV") {
-        score += 15;
-    }
-    
-    if title_upper.contains("HEVC") || title_upper.contains("X265") {
-        score += 10;
-    }
-    
-    score += (seeders / 10).min(20) as i32;
-    
-    let size_gb = size_bytes as f64 / 1_073_741_824.0;
-    if size_gb > 5.0 && size_gb < 20.0 {
-        score += 10;
-    }
-    
-    score
+
+    score - query.len() as i32 / 8
 }
 
-fn build_anime_episode_queries(base_titles: &[String], episode: u32) -> Vec<String> {
-    let mut queries = Vec::new();
-    
-    for title in base_titles {
-        queries.push(format!("{} {:02}", title, episode));
-        queries.push(format!("{} - {:02}", title, episode));
-        queries.push(format!("{} E{:02}", title, episode));
-        queries.push(format!("{} EP{:02}", title, episode));
-        
-        if episode < 10 {
-            queries.push(format!("{} {}", title, episode));
-            queries.push(format!("{} - {}", title, episode));
+async fn scrape_queries_progressively(
+    scraper_manager: Arc<ScraperManager>,
+    content_type: &str,
+    search_queries: &[String],
+    metadata_title: &str,
+    target_year: Option<u32>,
+    target_season: Option<u32>,
+    target_episode: Option<u32>,
+) -> Vec<ScrapedTorrent> {
+    let mut all_torrents = Vec::new();
+    let query_batches = build_query_batches(search_queries);
+
+    for (batch_index, batch) in query_batches.iter().enumerate() {
+        let scraped = scrape_query_batch(scraper_manager.clone(), content_type, batch).await;
+        all_torrents.extend(scraped);
+
+        let unique = dedupe_torrents_by_hash(all_torrents.clone());
+
+        if batch_index + 1 < query_batches.len()
+            && should_stop_query_expansion(
+                &unique,
+                metadata_title,
+                target_year,
+                target_season,
+                target_episode,
+            )
+        {
+            info!(
+                "Stopping query expansion early after batch {}/{} with {} unique torrents",
+                batch_index + 1,
+                query_batches.len(),
+                unique.len()
+            );
+            return unique;
         }
     }
-    
-    queries
+
+    dedupe_torrents_by_hash(all_torrents)
+}
+
+async fn scrape_query_batch(
+    scraper_manager: Arc<ScraperManager>,
+    content_type: &str,
+    queries: &[String],
+) -> Vec<ScrapedTorrent> {
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    let mut stream = FuturesUnordered::new();
+
+    for query in queries {
+        let manager = scraper_manager.clone();
+        let query = query.clone();
+        let content_type = content_type.to_string();
+
+        stream.push(async move {
+            info!("Scraping for query: {}", query);
+            let scraped = manager.scrape_all(&query, &content_type).await;
+            (query, scraped)
+        });
+    }
+
+    let mut all_torrents = Vec::new();
+    while let Some((query, scraped)) = stream.next().await {
+        info!(
+            "Scraper found {} results for query: {}",
+            scraped.len(),
+            query
+        );
+        all_torrents.extend(scraped);
+    }
+
+    all_torrents
+}
+
+fn build_query_batches(search_queries: &[String]) -> Vec<Vec<String>> {
+    match search_queries.len() {
+        0 => Vec::new(),
+        1 | 2 => vec![search_queries.to_vec()],
+        3 | 4 => vec![search_queries[..2].to_vec(), search_queries[2..].to_vec()],
+        _ => vec![
+            search_queries[..2].to_vec(),
+            search_queries[2..4].to_vec(),
+            search_queries[4..].to_vec(),
+        ],
+    }
+}
+
+fn dedupe_torrents_by_hash(torrents: Vec<ScrapedTorrent>) -> Vec<ScrapedTorrent> {
+    let mut seen_hashes = HashSet::new();
+    torrents
+        .into_iter()
+        .filter(|torrent| seen_hashes.insert(torrent.info_hash.clone()))
+        .collect()
+}
+
+fn should_stop_query_expansion(
+    torrents: &[ScrapedTorrent],
+    metadata_title: &str,
+    target_year: Option<u32>,
+    target_season: Option<u32>,
+    target_episode: Option<u32>,
+) -> bool {
+    if torrents.len() < 12 {
+        return false;
+    }
+
+    let mut scores: Vec<i32> = torrents
+        .iter()
+        .map(|torrent| {
+            hydrogene::calculate_match_score(
+                metadata_title,
+                target_year,
+                target_season,
+                target_episode,
+                &torrent.title,
+                torrent.seeders,
+                torrent.size_bytes,
+            )
+        })
+        .collect();
+
+    scores.sort_unstable_by(|a, b| b.cmp(a));
+
+    let strong_threshold = if target_episode.is_some() {
+        105
+    } else if target_season.is_some() {
+        85
+    } else {
+        70
+    };
+
+    let strong_count = scores
+        .iter()
+        .take(12)
+        .filter(|score| **score >= strong_threshold)
+        .count();
+    let top_score = scores.first().copied().unwrap_or_default();
+
+    strong_count >= 6 || (strong_count >= 4 && top_score >= strong_threshold + 15)
 }
 
 async fn resolve_handler(
@@ -455,7 +577,7 @@ async fn resolve_handler(
     Path((hash, id)): Path<(String, String)>,
 ) -> Result<Redirect, (axum::http::StatusCode, String)> {
     info!("Resolve request for hash: {}, id: {}", hash, id);
-    
+
     let (season, episode) = if id.contains(':') && !id.starts_with("anilist:") {
         let parts: Vec<&str> = id.split(':').collect();
         if parts.len() >= 3 {
@@ -473,15 +595,19 @@ async fn resolve_handler(
     } else {
         (None, None)
     };
-    
+
     if season.is_some() || episode.is_some() {
         info!("Target for pack selection: S{:?}E{:?}", season, episode);
     }
 
     match tokio::time::timeout(
         std::time::Duration::from_secs(300),
-        state.debrid_client.resolve_magnet_with_status(&hash, season, episode)
-    ).await {
+        state
+            .debrid_client
+            .resolve_magnet_with_status(&hash, season, episode),
+    )
+    .await
+    {
         Ok(Ok(ResolveResult::Ready(video_url))) => {
             info!("Torrent {} ready, redirecting to video", hash);
             Ok(Redirect::temporary(&video_url))
@@ -511,7 +637,10 @@ async fn resolve_handler(
             error!("Failed to resolve {}: {}", hash, e);
             Err((
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                format!("❌ Errore: {}. Il torrent potrebbe non essere disponibile.", e),
+                format!(
+                    "❌ Errore: {}. Il torrent potrebbe non essere disponibile.",
+                    e
+                ),
             ))
         }
         Err(_) => {

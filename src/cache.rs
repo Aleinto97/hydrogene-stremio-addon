@@ -1,9 +1,8 @@
+use anyhow::Result;
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use chrono::{DateTime, Utc, Duration};
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 const CACHE_TTL_HOURS: i64 = 24;
 
@@ -28,8 +27,9 @@ impl MetadataCache {
             .min_connections(1)
             .connect(database_url)
             .await?;
-        
-        sqlx::query(r#"
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS metadata_cache (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -38,13 +38,14 @@ impl MetadataCache {
                 search_queries JSONB NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-        "#)
+        "#,
+        )
         .execute(&pool)
         .await?;
-        
+
         Ok(Self { pool })
     }
-    
+
     pub async fn get(&self, id: &str) -> Result<Option<CachedMetadata>> {
         let result = sqlx::query_as::<_, (String, Option<String>, String, serde_json::Value, DateTime<Utc>)>(
             "SELECT title, year, content_type, search_queries, created_at FROM metadata_cache WHERE id = $1"
@@ -52,7 +53,7 @@ impl MetadataCache {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         match result {
             Some((title, year, content_type, queries_json, created_at)) => {
                 let search_queries: Vec<String> = serde_json::from_value(queries_json)?;
@@ -63,8 +64,8 @@ impl MetadataCache {
                     search_queries,
                     created_at,
                 };
-                
-                if Utc::now() - cached.created_at < Duration::hours(CACHE_TTL_HOURS) {
+
+                if is_cache_entry_fresh(&cached) {
                     tracing::info!("Cache HIT for metadata: {}", id);
                     Ok(Some(cached))
                 } else {
@@ -78,10 +79,10 @@ impl MetadataCache {
             }
         }
     }
-    
+
     pub async fn set(&self, id: &str, metadata: &CachedMetadata) -> Result<()> {
         let queries_json = serde_json::to_value(&metadata.search_queries)?;
-        
+
         sqlx::query(
             "INSERT INTO metadata_cache (id, title, year, content_type, search_queries, created_at)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -90,7 +91,7 @@ impl MetadataCache {
                 year = EXCLUDED.year,
                 content_type = EXCLUDED.content_type,
                 search_queries = EXCLUDED.search_queries,
-                created_at = EXCLUDED.created_at"
+                created_at = EXCLUDED.created_at",
         )
         .bind(id)
         .bind(&metadata.title)
@@ -100,8 +101,12 @@ impl MetadataCache {
         .bind(metadata.created_at)
         .execute(&self.pool)
         .await?;
-        
+
         tracing::info!("Cache SET for metadata: {}", id);
         Ok(())
     }
+}
+
+pub fn is_cache_entry_fresh(cached: &CachedMetadata) -> bool {
+    Utc::now() - cached.created_at < Duration::hours(CACHE_TTL_HOURS)
 }

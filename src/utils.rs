@@ -74,7 +74,7 @@ static EPISODE_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bS(\d{1,2})E(\d{1,3})\b").expect("Invalid regex pattern"));
 
 static MULTI_EPISODE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\bS(\d{1,2})E(\d{1,3})-(\d{1,3})\b").expect("Invalid regex pattern")
+    Regex::new(r"(?i)\bS(\d{1,2})E(\d{1,3})-(?:E)?(\d{1,3})\b").expect("Invalid regex pattern")
 });
 
 static ANIME_EPISODE_REGEX: Lazy<Regex> = Lazy::new(|| {
@@ -84,6 +84,13 @@ static ANIME_EPISODE_REGEX: Lazy<Regex> = Lazy::new(|| {
 static ANIME_BRACKET_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\[(?:[^\]]*\s+)?(\d{1,3})(?:v\d)?(?:\s+[^\]]*)?\]")
         .expect("Invalid regex pattern")
+});
+
+static SEASON_ONLY_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:S|SEASON\s*)(\d{1,2})\b").expect("Invalid regex pattern"));
+
+static EPISODE_MARKER_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:E|EP|EPISODE| -)\s*(\d{1,3})\b").expect("Invalid regex pattern")
 });
 
 pub fn is_exact_episode_match(title: &str, season: u32, episode: u32) -> bool {
@@ -126,9 +133,8 @@ pub fn is_exact_episode_match(title: &str, season: u32, episode: u32) -> bool {
         }
     }
 
-    let season_regex = Regex::new(r"(?i)\b(?:S|SEASON\s*)(\d{1,2})\b").unwrap();
     let mut is_season_match = false;
-    for caps in season_regex.captures_iter(&title_upper) {
+    for caps in SEASON_ONLY_REGEX.captures_iter(&title_upper) {
         let matched_season = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
         if matched_season == Some(season) {
             is_season_match = true;
@@ -137,8 +143,7 @@ pub fn is_exact_episode_match(title: &str, season: u32, episode: u32) -> bool {
     }
 
     if is_season_match {
-        let ep_marker_regex = Regex::new(r"(?i)\b(?:E|EP|EPISODE| -)\s*(\d{1,3})\b").unwrap();
-        if let Some(caps) = ep_marker_regex.captures(&title_upper) {
+        if let Some(caps) = EPISODE_MARKER_REGEX.captures(&title_upper) {
             let matched_ep = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
             if matched_ep != Some(episode) {
                 return false;
