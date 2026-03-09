@@ -46,7 +46,7 @@ COPY --from=cacher /app/target target
 COPY --from=cacher /usr/local/cargo /usr/local/cargo
 
 # Build the actual application with fast linker
-RUN RUSTFLAGS="-C link-arg=-fuse-ld=lld" cargo build --release --locked
+RUN cargo update && RUSTFLAGS="-C link-arg=-fuse-ld=lld" cargo build --release --locked
 
 # Strip binary to reduce size
 RUN strip target/release/stremio-addon
