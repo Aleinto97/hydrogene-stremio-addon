@@ -32,9 +32,16 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     
     // Initialize tracing with a custom filter
-    // Default to info, but suppress debug logs from tower_http and other verbose dependencies
+    // Force info level for verbose dependencies even if RUST_LOG=debug is set
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=info,axum=info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        .add_directive("tower_http=info".parse().unwrap())
+        .add_directive("axum=info".parse().unwrap())
+        .add_directive("scraper=info".parse().unwrap())
+        .add_directive("selectors=info".parse().unwrap())
+        .add_directive("hyper=info".parse().unwrap())
+        .add_directive("h2=info".parse().unwrap())
+        .add_directive("rustls=info".parse().unwrap());
     
     tracing_subscriber::fmt()
         .with_env_filter(filter)

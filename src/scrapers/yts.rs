@@ -6,7 +6,12 @@ use crate::scrapers::{Scraper, ScrapedTorrent, create_magnet};
 
 // YTS.mx API - Official JSON API for movie torrents
 // Docs: https://yts.mx/api
-const YTS_API: &str = "https://yts.mx/api/v2";
+const YTS_MIRRORS: &[&str] = &[
+    "https://yts.mx/api/v2",
+    "https://yts.pm/api/v2",
+    "https://yts.rs/api/v2",
+    "https://yts.lt/api/v2",
+];
 
 #[derive(Debug, Deserialize)]
 struct YtsResponse {
@@ -58,17 +63,31 @@ impl YtsScraper {
     }
 
     pub async fn search(&self, query: &str, _content_type: &str) -> Result<Vec<ScrapedTorrent>> {
-        tracing::info!("YTS API search for: {}", query);
+        for mirror in YTS_MIRRORS {
+            match self.search_with_mirror(query, mirror).await {
+                Ok(torrents) if !torrents.is_empty() => return Ok(torrents),
+                Ok(_) => continue,
+                Err(e) => {
+                    tracing::warn!("YTS mirror {} failed: {}", mirror, e);
+                    continue;
+                }
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    pub async fn search_with_mirror(&self, query: &str, mirror: &str) -> Result<Vec<ScrapedTorrent>> {
+        tracing::info!("YTS API search for: {} on {}", query, mirror);
         
         // Build API URL - supports both query and IMDB ID
         let search_url = if query.starts_with("tt") {
             // Search by IMDB ID
             format!("{}/list_movies.json?query_term={}&limit=50&sort_by=seeds&order_by=desc", 
-                YTS_API, query)
+                mirror, query)
         } else {
             // Regular search
             format!("{}/list_movies.json?query_term={}&limit=50&sort_by=seeds&order_by=desc", 
-                YTS_API, urlencoding::encode(query))
+                mirror, urlencoding::encode(query))
         };
         
         let response = match self.client

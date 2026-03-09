@@ -12,6 +12,7 @@ pub mod bitsearch;
 pub mod yts;
 pub mod eztv;
 pub mod nekobt;
+pub mod solidtorrents;
 
 #[derive(Debug, Clone)]
 pub struct ScrapedTorrent {
@@ -52,6 +53,7 @@ impl ScraperManager {
             Box::new(yts::YtsScraper::new()?),
             Box::new(eztv::EztvScraper::new()?),
             Box::new(nekobt::NekoBtScraper::new()?),
+            Box::new(solidtorrents::SolidScraper::new()?),
         ];
 
         Ok(Self { scrapers })
@@ -63,7 +65,7 @@ impl ScraperManager {
         use tracing::warn;
 
         let query = Self::id_to_query(id);
-        let scraper_timeout = Duration::from_secs(1);
+        let scraper_timeout = Duration::from_secs(15);
 
         let target_scrapers: Vec<_> = self.scrapers
             .iter()
