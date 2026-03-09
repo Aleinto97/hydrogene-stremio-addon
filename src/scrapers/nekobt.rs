@@ -16,12 +16,12 @@ struct NekoApiResponse {
     #[serde(default)]
     torrents: Vec<NekoTorrent>,
     #[serde(default)]
-    total: i32,
+    _total: i32,
 }
 
 #[derive(Debug, Deserialize)]
 struct NekoTorrent {
-    id: i64,
+    _id: i64,
     title: String,
     hash: String,
     #[serde(rename = "magnet_link")]
@@ -30,7 +30,7 @@ struct NekoTorrent {
     seeders: i32,
     leechers: i32,
     #[serde(default)]
-    media_title: Option<String>,
+    _media_title: Option<String>,
 }
 
 pub struct NekoBtScraper {

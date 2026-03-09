@@ -20,13 +20,13 @@ struct EztvResponse {
 #[derive(Debug, Deserialize, Clone)]
 struct EztvTorrent {
     #[serde(rename = "torrent_id")]
-    id: i64,
+    _id: i64,
     #[serde(rename = "torrent_hash")]
     hash: String,
     #[serde(rename = "torrent_title")]
     title: String,
     #[serde(rename = "imdb_id")]
-    imdb_id: String,
+    _imdb_id: String,
     #[serde(rename = "season")]
     season: String,
     #[serde(rename = "episode")]
@@ -36,7 +36,7 @@ struct EztvTorrent {
     #[serde(rename = "peers")]
     leechers: i32,
     #[serde(rename = "date_released_unix")]
-    date_released: i64,
+    _date_released: i64,
     #[serde(rename = "size_bytes")]
     size_bytes: String,
 }

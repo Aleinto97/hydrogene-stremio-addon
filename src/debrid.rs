@@ -47,7 +47,8 @@ struct RDFile {
 struct RDUnrestrictResponse {
     id: String,
     filename: String,
-    mimeType: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
     link: String,
     host: String,
     chunks: i64,

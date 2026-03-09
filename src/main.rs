@@ -6,13 +6,13 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{info, error, Level};
+use tracing::{info, error};
 use tower_http::trace::TraceLayer;
 
 use hydrogene::debrid;
 use hydrogene::metadata;
 use hydrogene::scrapers;
-use hydrogene::stremio_format::{StremioFormatter, StremioStream, TorrentInfo};
+use hydrogene::stremio_format::{StremioStream, TorrentInfo};
 use hydrogene::utils;
 use hydrogene::ResolveResult;
 
@@ -427,6 +427,7 @@ async fn stream_handler(
         .parse()
         .unwrap_or(1);
     
+    let total_scraped = torrents.len();
     let filtered_torrents: Vec<ScrapedTorrent> = torrents
         .into_iter()
         .filter(|t| t.seeders >= min_seeders) // Filter out dead torrents
@@ -449,8 +450,8 @@ async fn stream_handler(
         })
         .collect();
     
-    info!("Total unique torrents: {}, Filtered (quality/episode): {}", unique.len(), filtered_torrents.len());
-    if filtered_torrents.is_empty() && !unique.is_empty() {
+    info!("Total unique torrents: {}, Filtered (quality/episode): {}", total_scraped, filtered_torrents.len());
+    if filtered_torrents.is_empty() && total_scraped > 0 {
         info!("No torrents matched the filters (min seeders: {}, quality: 1080p+, episode match: {:?}:{:?})", 
             min_seeders, target_season, target_episode);
     }

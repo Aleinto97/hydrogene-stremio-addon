@@ -1,37 +1,58 @@
 # ===========================================
-# Stage 1: Builder
-# Heavy container for compiling Rust code
+# Stage 1: Planner
 # ===========================================
-FROM rust:1.88-slim-bookworm AS builder
+FROM lukemathwalker/cargo-chef:latest-rust-1.88-slim-bookworm AS planner
+WORKDIR /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Install required dependencies for compilation
+# ===========================================
+# Stage 2: Cacher
+# ===========================================
+FROM lukemathwalker/cargo-chef:latest-rust-1.88-slim-bookworm AS cacher
+WORKDIR /app
+COPY --from=planner /app/recipe.json recipe.json
+
+# Install dependencies for compilation
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libpq-dev \
+    lld \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
+# Build dependencies only (cached layer)
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# ===========================================
+# Stage 3: Builder
+# ===========================================
+FROM rust:1.88-slim-bookworm AS builder
+
+# Install dependencies for compilation
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    libpq-dev \
+    lld \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+COPY . .
 
-# Copy Cargo files first for better caching
-COPY Cargo.toml Cargo.lock ./
+# Copy pre-compiled dependencies
+COPY --from=cacher /app/target target
+COPY --from=cacher /usr/local/cargo /usr/local/cargo
 
-# Copy source code
-COPY src ./src
-
-# Build dependencies (cached layer)
-RUN cargo build --release --locked 2>/dev/null || true
-
-# Build the actual application
-RUN cargo build --release --locked
+# Build the actual application with fast linker
+RUN RUSTFLAGS="-C link-arg=-fuse-ld=lld" cargo build --release --locked
 
 # Strip binary to reduce size
 RUN strip target/release/stremio-addon
 
 # ===========================================
-# Stage 2: Runner
-# Minimal container for running the app
+# Stage 4: Runner
 # ===========================================
 FROM debian:bookworm-slim AS runner
 
@@ -44,27 +65,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Create non-root user for security
+# Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
-
-# Set working directory
 WORKDIR /app
-
-# Copy binary from builder stage
 COPY --from=builder /app/target/release/stremio-addon /app/stremio-addon
-
-# Change ownership to non-root user
 RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
 USER appuser
-
-# Expose the port (Koyeb uses PORT env var)
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
-# Run the application
 CMD ["./stremio-addon"]
