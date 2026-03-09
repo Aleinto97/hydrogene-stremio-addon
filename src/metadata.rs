@@ -2,6 +2,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
+use chrono::Utc;
+
+use crate::cache::{MetadataCache, CachedMetadata};
 
 const TMDB_API_BASE: &str = "https://api.themoviedb.org/3";
 const OMDB_API_BASE: &str = "http://www.omdbapi.com";
@@ -11,6 +14,7 @@ pub struct MetadataClient {
     client: Arc<Client>,
     tmdb_api_key: Option<String>,
     omdb_api_key: Option<String>,
+    cache: Option<Arc<MetadataCache>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,68 +63,16 @@ impl MetadataClient {
             client,
             tmdb_api_key,
             omdb_api_key,
+            cache: None,
         })
     }
-
-    /// Resolve anime ID (anilist:) to title using GraphQL
-    pub async fn resolve_anime_title(&self, stremio_id: &str) -> Option<String> {
-        let parts: Vec<&str> = stremio_id.split(':').collect();
-        
-        match parts.as_slice() {
-            // --- CASE: ANILIST via GraphQL ---
-            ["anilist", id] | ["anilist", id, _] => {
-                let anime_id = id.parse::<i32>().unwrap_or(0);
-                
-                if anime_id == 0 {
-                    return None;
-                }
-                
-                let query = serde_json::json!({
-                    "query": "query ($id: Int) { Media (id: $id, type: ANIME) { title { english romaji } } }",
-                    "variables": { "id": anime_id }
-                });
-                
-                match self.client
-                    .post(ANILIST_API_BASE)
-                    .header("Content-Type", "application/json")
-                    .json(&query)
-                    .send()
-                    .await
-                {
-                    Ok(res) if res.status().is_success() => {
-                        match res.json::<serde_json::Value>().await {
-                            Ok(data) => {
-                                // Try English title first, fallback to romaji
-                                let title = data["data"]["Media"]["title"]["english"]
-                                    .as_str()
-                                    .or_else(|| data["data"]["Media"]["title"]["romaji"].as_str());
-                                
-                                if let Some(t) = title {
-                                    return Some(t.to_string());
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("AniList JSON parse error: {}", e);
-                            }
-                        }
-                    }
-                    Ok(res) => {
-                        tracing::warn!("AniList bad status: {}", res.status());
-                    }
-                    Err(e) => {
-                        tracing::warn!("AniList request error: {}", e);
-                    }
-                }
-            }
-            
-            _ => {}
-        }
-        
-        None
+    
+    pub fn with_cache(mut self, cache: Arc<MetadataCache>) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     pub async fn lookup_by_imdb(&self, imdb_id: &str, content_type: &str) -> Result<ContentMetadata> {
-        // Parse season and episode from IMDB ID if present (format: tt1234567:1:3)
         let id_parts: Vec<&str> = imdb_id.split(':').collect();
         let (base_imdb_id, season, episode) = if id_parts.len() >= 3 {
             let base = id_parts[0].to_string();
@@ -131,77 +83,184 @@ impl MetadataClient {
             (imdb_id.to_string(), None, None)
         };
         
-        // Handle anime IDs (anilist:) via GraphQL
+        let cache_key = imdb_id.to_string();
+        
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get(&cache_key).await? {
+                return Ok(ContentMetadata {
+                    title: cached.title,
+                    year: cached.year,
+                    content_type: cached.content_type,
+                    search_queries: cached.search_queries,
+                });
+            }
+        }
+        
         if imdb_id.starts_with("anilist:") {
-            tracing::info!("Resolving anime ID via GraphQL: {}", imdb_id);
-            
-            match self.resolve_anime_title(imdb_id).await {
-                Some(title) => {
-                    tracing::info!("Anime resolved to title: {}", title);
-                    return Ok(ContentMetadata {
-                        title: title.clone(),
-                        year: None,
-                        content_type: "series".to_string(),
-                        search_queries: vec![title],
-                    });
-                }
-                None => {
-                    tracing::warn!("Failed to resolve anime ID: {}", imdb_id);
-                }
+            return self.lookup_anime(imdb_id, season, episode).await;
+        }
+
+        let mut metadata = if let Some(ref api_key) = self.tmdb_api_key {
+            self.lookup_tmdb(&base_imdb_id, content_type, api_key).await.ok()
+        } else {
+            None
+        };
+        
+        if metadata.is_none() {
+            if let Some(ref api_key) = self.omdb_api_key {
+                metadata = self.lookup_omdb(&base_imdb_id, api_key).await.ok();
             }
-            
-            // Fallback: use ID for direct search
-            let fallback_id = imdb_id.replace("anilist:", "");
-            
-            return Ok(ContentMetadata {
-                title: format!("Anime {}", fallback_id),
-                year: None,
+        }
+        
+        let mut metadata = metadata.ok_or_else(|| anyhow!("No metadata found for {}", imdb_id))?;
+        
+        if let (Some(s), Some(e)) = (season, episode) {
+            self.add_episode_queries(&mut metadata, s, e);
+        }
+        
+        if let Some(ref cache) = self.cache {
+            let cached = CachedMetadata {
+                title: metadata.title.clone(),
+                year: metadata.year.clone(),
+                content_type: metadata.content_type.clone(),
+                search_queries: metadata.search_queries.clone(),
+                created_at: Utc::now(),
+            };
+            let _ = cache.set(&cache_key, &cached).await;
+        }
+        
+        Ok(metadata)
+    }
+    
+    async fn lookup_anime(&self, anime_id: &str, season: Option<u32>, episode: Option<u32>) -> Result<ContentMetadata> {
+        let parts: Vec<&str> = anime_id.split(':').collect();
+        let anime_num_id = parts.get(1)
+            .and_then(|s| s.parse::<i32>().ok())
+            .ok_or_else(|| anyhow!("Invalid anime ID"))?;
+        
+        let query = serde_json::json!({
+            "query": r#"
+                query ($id: Int) {
+                    Media (id: $id, type: ANIME) {
+                        title { english romaji native }
+                        synonyms
+                        startDate { year }
+                    }
+                }
+            "#,
+            "variables": { "id": anime_num_id }
+        });
+        
+        let response = self.client
+            .post(ANILIST_API_BASE)
+            .header("Content-Type", "application/json")
+            .json(&query)
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            return Err(anyhow!("AniList API error: {}", response.status()));
+        }
+        
+        let data: serde_json::Value = response.json().await?;
+        let media = &data["data"]["Media"];
+        
+        let english_title = media["title"]["english"].as_str();
+        let romaji_title = media["title"]["romaji"].as_str();
+        let native_title = media["title"]["native"].as_str();
+        let synonyms: Vec<String> = media["synonyms"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        
+        let year = media["startDate"]["year"].as_i64().map(|y| y.to_string());
+        
+        let primary_title = english_title
+            .or(romaji_title)
+            .or(native_title)
+            .ok_or_else(|| anyhow!("No title found"))?;
+        
+        let mut queries = vec![primary_title.to_string()];
+        
+        if let Some(romaji) = romaji_title {
+            if romaji != primary_title {
+                queries.push(romaji.to_string());
+            }
+        }
+        
+        if let Some(native) = native_title {
+            if native != primary_title {
+                queries.push(native.to_string());
+            }
+        }
+        
+        for synonym in synonyms.iter().take(3) {
+            if !queries.contains(synonym) {
+                queries.push(synonym.clone());
+            }
+        }
+        
+        if let Some(ep) = episode {
+            let ep_queries = self.build_anime_episode_queries(&queries, ep);
+            queries.extend(ep_queries);
+        }
+        
+        if let Some(ref cache) = self.cache {
+            let cached = CachedMetadata {
+                title: primary_title.to_string(),
+                year: year.clone(),
                 content_type: "series".to_string(),
-                search_queries: vec![fallback_id],
-            });
+                search_queries: queries.clone(),
+                created_at: Utc::now(),
+            };
+            let _ = cache.set(anime_id, &cached).await;
         }
-
-        // Try TMDB for movies/series
-        if let Some(ref api_key) = self.tmdb_api_key {
-            if let Ok(mut metadata) = self.lookup_tmdb(&base_imdb_id, content_type, api_key).await {
-                // Add season/episode specific queries for series
-                if let (Some(season_num), Some(episode_num)) = (season, episode) {
-                    let title = &metadata.title;
-                    // Add SXXEYY queries for better torrent matching
-                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title, season_num, episode_num));
-                    metadata.search_queries.push(format!("{} S{}E{}", title, season_num, episode_num));
-                    // Also add without colon (some trackers use this format)
-                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title.replace(":", ""), season_num, episode_num));
-                }
-                return Ok(metadata);
+        
+        Ok(ContentMetadata {
+            title: primary_title.to_string(),
+            year,
+            content_type: "series".to_string(),
+            search_queries: queries,
+        })
+    }
+    
+    fn build_anime_episode_queries(&self, base_titles: &[String], episode: u32) -> Vec<String> {
+        let mut queries = Vec::new();
+        
+        for title in base_titles {
+            queries.push(format!("{} {:02}", title, episode));
+            queries.push(format!("{} - {:02}", title, episode));
+            queries.push(format!("{} E{:02}", title, episode));
+            queries.push(format!("{} EP{:02}", title, episode));
+            queries.push(format!("{} Episode {:02}", title, episode));
+            
+            if episode < 10 {
+                queries.push(format!("{} {}", title, episode));
+                queries.push(format!("{} - {}", title, episode));
             }
         }
-
-        // Fallback to OMDB
-        if let Some(ref api_key) = self.omdb_api_key {
-            if let Ok(mut metadata) = self.lookup_omdb(&base_imdb_id, api_key).await {
-                // Add season/episode specific queries for series
-                if let (Some(season_num), Some(episode_num)) = (season, episode) {
-                    let title = &metadata.title;
-                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title, season_num, episode_num));
-                    metadata.search_queries.push(format!("{} S{}E{}", title, season_num, episode_num));
-                    metadata.search_queries.push(format!("{} S{:02}E{:02}", title.replace(":", ""), season_num, episode_num));
-                }
-                return Ok(metadata);
-            }
+        
+        queries
+    }
+    
+    fn add_episode_queries(&self, metadata: &mut ContentMetadata, season: u32, episode: u32) {
+        let title = &metadata.title;
+        let title_no_colon = title.replace(":", "");
+        
+        let episode_queries = vec![
+            format!("{} S{:02}E{:02}", title, season, episode),
+            format!("{} S{}E{}", title, season, episode),
+            format!("{} S{:02}E{:02}", title_no_colon, season, episode),
+            format!("{} {}x{:02}", title, season, episode),
+            format!("{} Season {} Episode {}", title, season, episode),
+            format!("{} S{:02}", title, season),
+        ];
+        
+        metadata.search_queries.extend(episode_queries);
+        
+        if let Some(ref year) = metadata.year {
+            metadata.search_queries.push(format!("{} {} S{:02}E{:02}", title, year, season, episode));
         }
-
-        // Direct title fallback
-        if !imdb_id.starts_with("tt") || imdb_id.len() < 3 {
-            return Ok(ContentMetadata {
-                title: imdb_id.to_string(),
-                year: None,
-                content_type: content_type.to_string(),
-                search_queries: vec![imdb_id.to_string()],
-            });
-        }
-
-        Err(anyhow!("No metadata API configured and cannot parse ID: {}", imdb_id))
     }
 
     async fn lookup_tmdb(&self, imdb_id: &str, content_type: &str, api_key: &str) -> Result<ContentMetadata> {
@@ -302,61 +361,5 @@ impl MetadataClient {
             content_type,
             search_queries: queries,
         })
-    }
-
-    pub async fn search_tmdb(&self, query: &str, content_type: &str, api_key: &str) -> Result<Vec<ContentMetadata>> {
-        let endpoint = if content_type == "movie" {
-            "search/movie"
-        } else {
-            "search/tv"
-        };
-
-        let url = format!(
-            "{}/{}?api_key={}&query={}&page=1",
-            TMDB_API_BASE, endpoint, api_key, urlencoding::encode(query)
-        );
-
-        let response = self.client
-            .get(&url)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("TMDB API error: {}", response.status()));
-        }
-
-        let data: TMDBSearchResult = response.json().await?;
-        
-        let results: Vec<ContentMetadata> = data.results
-            .into_iter()
-            .take(5)
-            .map(|item| {
-                let title = item.title
-                    .or(item.name)
-                    .or(item.original_title)
-                    .or(item.original_name)
-                    .unwrap_or_default();
-
-                let year = item.release_date
-                    .or_else(|| item.first_air_date)
-                    .map(|d| d.split('-').next().map(|y| y.to_string()).unwrap_or_default())
-                    .filter(|y| !y.is_empty());
-
-                let mut queries = vec![title.clone()];
-                if let Some(ref y) = year {
-                    queries.push(format!("{} {}", title, y));
-                }
-
-                ContentMetadata {
-                    title,
-                    year,
-                    content_type: content_type.to_string(),
-                    search_queries: queries,
-                }
-            })
-            .filter(|m| !m.title.is_empty())
-            .collect();
-
-        Ok(results)
     }
 }
