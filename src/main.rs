@@ -341,6 +341,7 @@ async fn stream_handler(
     let mut scored_torrents: Vec<(ScrapedTorrent, i32)> = torrents
         .into_iter()
         .filter(|t| t.seeders >= min_seeders)
+        .filter(|t| quality_bucket(&t.title) >= 4)
         .map(|t| {
             // Use advanced matching with fuzzy logic
             let score = hydrogene::calculate_match_score(
