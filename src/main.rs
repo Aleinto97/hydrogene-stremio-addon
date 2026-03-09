@@ -149,6 +149,7 @@ async fn timeout_middleware(
 }
 
 async fn root_handler() -> &'static str {
+    info!("Root handler called");
     "Hydrogen Stremio Addon - Use /manifest.json for Stremio"
 }
 
