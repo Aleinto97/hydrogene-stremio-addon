@@ -22,23 +22,23 @@ struct EztvTorrent {
     #[serde(rename = "torrent_id")]
     _id: Option<serde_json::Value>,
     #[serde(rename = "torrent_hash")]
-    hash: String,
+    hash: Option<String>,
     #[serde(rename = "torrent_title")]
     title: String,
     #[serde(rename = "imdb_id")]
-    _imdb_id: String,
+    _imdb_id: Option<String>,
     #[serde(rename = "season")]
-    season: String,
+    season: Option<String>,
     #[serde(rename = "episode")]
-    episode: String,
+    episode: Option<String>,
     #[serde(rename = "seeds")]
     seeders: i32,
     #[serde(rename = "peers")]
     leechers: i32,
     #[serde(rename = "date_released_unix")]
-    _date_released: i64,
+    _date_released: Option<i64>,
     #[serde(rename = "size_bytes")]
-    size_bytes: String,
+    size_bytes: Option<String>,
 }
 
 pub struct EztvScraper {
@@ -107,8 +107,16 @@ impl EztvScraper {
                 continue;
             }
 
-            let info_hash = torrent.hash.to_lowercase();
-            let size_bytes: u64 = torrent.size_bytes.parse().unwrap_or(0);
+            let info_hash = match torrent.hash.as_deref() {
+                Some(hash) if !hash.is_empty() => hash.to_lowercase(),
+                _ => continue,
+            };
+            let size_bytes: u64 = torrent
+                .size_bytes
+                .as_deref()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
             let magnet_link = format!(
                 "magnet:?xt=urn:btih:{}&dn={}",
                 info_hash,
@@ -116,8 +124,14 @@ impl EztvScraper {
             );
 
             // Format season/episode info
-            let episode_info = if !torrent.season.is_empty() && !torrent.episode.is_empty() {
-                format!(" S{}E{}", torrent.season, torrent.episode)
+            let episode_info = if let (Some(season), Some(episode)) =
+                (torrent.season.as_deref(), torrent.episode.as_deref())
+            {
+                if !season.is_empty() && !episode.is_empty() {
+                    format!(" S{}E{}", season, episode)
+                } else {
+                    String::new()
+                }
             } else {
                 String::new()
             };

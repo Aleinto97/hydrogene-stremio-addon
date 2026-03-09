@@ -441,7 +441,7 @@ async fn scrape_queries_progressively(
     target_episode: Option<u32>,
 ) -> Vec<ScrapedTorrent> {
     let mut all_torrents = Vec::new();
-    let query_batches = build_query_batches(search_queries);
+    let query_batches = build_query_batches(search_queries, target_episode);
 
     for (batch_index, batch) in query_batches.iter().enumerate() {
         let scraped = scrape_query_batch(scraper_manager.clone(), content_type, batch).await;
@@ -505,10 +505,24 @@ async fn scrape_query_batch(
     all_torrents
 }
 
-fn build_query_batches(search_queries: &[String]) -> Vec<Vec<String>> {
+fn build_query_batches(search_queries: &[String], target_episode: Option<u32>) -> Vec<Vec<String>> {
     match search_queries.len() {
         0 => Vec::new(),
-        1 | 2 => vec![search_queries.to_vec()],
+        1 => vec![search_queries.to_vec()],
+        _ if target_episode.is_some() => {
+            let mut batches = vec![vec![search_queries[0].clone()]];
+
+            if search_queries.len() > 1 {
+                batches.push(search_queries[1..search_queries.len().min(3)].to_vec());
+            }
+
+            if search_queries.len() > 3 {
+                batches.push(search_queries[3..].to_vec());
+            }
+
+            batches
+        }
+        2 => vec![search_queries.to_vec()],
         3 | 4 => vec![search_queries[..2].to_vec(), search_queries[2..].to_vec()],
         _ => vec![
             search_queries[..2].to_vec(),

@@ -8,9 +8,6 @@ use serde::{Deserialize, Serialize};
 // 1337x mirrors - often less protected than main domain
 const X1337_MIRRORS: &[&str] = &["https://1337x.to", "https://1337x.st", "https://x1337x.ws"];
 
-// FlareSolverr endpoint
-const FLARESOLVERR_URL: &str = "http://localhost:8191/v1";
-
 pub struct X1337Scraper {
     client: Client,
     flaresolverr_enabled: bool,
@@ -48,7 +45,7 @@ impl X1337Scraper {
         // Check if FlareSolverr is enabled via env var
         let flaresolverr_enabled = std::env::var("USE_FLARESOLVERR")
             .map(|v| v == "true" || v == "1")
-            .unwrap_or(true); // Default to true since 1337x needs it
+            .unwrap_or(false);
 
         let flaresolverr_url = std::env::var("FLARESOLVERR_URL")
             .unwrap_or_else(|_| "http://localhost:8191/v1".to_string());
