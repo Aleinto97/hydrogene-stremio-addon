@@ -525,9 +525,18 @@ impl MetadataIndex {
 
     async fn ensure_hydra_loaded(&self, hydra: &HydraId) -> Result<()> {
         if let Some(existing) = self.items.read().await.get(&hydra.base_key()).cloned() {
+            let missing_rich_meta = existing.logo.is_none()
+                && existing.imdb_rating.is_none()
+                && existing.director.is_empty()
+                && existing.cast.is_empty()
+                && existing.trailers.is_empty();
             let needs_tmdb_hydration = matches!(hydra.source, HydraSource::Tmdb)
-                && ((hydra.kind == HydraKind::Movie && existing.imdb_id.is_none())
-                    || (hydra.kind != HydraKind::Movie && existing.episodes.is_empty()));
+                && ((hydra.kind == HydraKind::Movie
+                    && (existing.imdb_id.is_none() || missing_rich_meta))
+                    || (hydra.kind != HydraKind::Movie
+                        && (existing.episodes.is_empty()
+                            || missing_rich_meta
+                            || existing.released.is_none())));
             if !needs_tmdb_hydration {
                 return Ok(());
             }
