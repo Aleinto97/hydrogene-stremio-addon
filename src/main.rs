@@ -410,6 +410,7 @@ async fn catalog_handler_extra(
 }
 
 fn merge_extra_segment(params: &mut HashMap<String, String>, extra: &str) {
+    let extra = extra.trim_end_matches(".json");
     for pair in extra.split('&') {
         let Some((key, value)) = pair.split_once('=') else {
             continue;
