@@ -402,10 +402,26 @@ async fn catalog_handler(
 
 async fn catalog_handler_extra(
     State(state): State<AppState>,
-    Path((content_type, id, _extra)): Path<(String, String, String)>,
-    Query(params): Query<HashMap<String, String>>,
+    Path((content_type, id, extra)): Path<(String, String, String)>,
+    Query(mut params): Query<HashMap<String, String>>,
 ) -> Json<CatalogResponse> {
+    merge_extra_segment(&mut params, &extra);
     catalog_response(state, content_type, id, params).await
+}
+
+fn merge_extra_segment(params: &mut HashMap<String, String>, extra: &str) {
+    for pair in extra.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let decoded_key = urlencoding::decode(key)
+            .map(|value| value.into_owned())
+            .unwrap_or_else(|_| key.to_string());
+        let decoded_value = urlencoding::decode(value)
+            .map(|value| value.into_owned())
+            .unwrap_or_else(|_| value.to_string());
+        params.entry(decoded_key).or_insert(decoded_value);
+    }
 }
 
 async fn catalog_response(
