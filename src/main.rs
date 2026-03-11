@@ -136,9 +136,19 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(root_handler))
         .route("/manifest.json", get(manifest_handler))
         .route("/manifest-meta.json", get(meta_manifest_handler))
+        .route("/hydrogen-meta/manifest.json", get(meta_manifest_handler))
         .route("/catalog/:type/:id.json", get(catalog_handler))
         .route("/catalog/:type/:id/:extra.json", get(catalog_handler_extra))
         .route("/meta/:type/:id.json", get(meta_handler))
+        .route(
+            "/hydrogen-meta/catalog/:type/:id.json",
+            get(catalog_handler),
+        )
+        .route(
+            "/hydrogen-meta/catalog/:type/:id/:extra.json",
+            get(catalog_handler_extra),
+        )
+        .route("/hydrogen-meta/meta/:type/:id.json", get(meta_handler))
         .route("/stream/:type/:id.json", get(stream_handler))
         .route("/resolve/:hash/:id", get(resolve_handler))
         .layer(
@@ -182,8 +192,11 @@ async fn timeout_middleware(
     if uri == "/"
         || uri == "/manifest.json"
         || uri == "/manifest-meta.json"
+        || uri == "/hydrogen-meta/manifest.json"
         || uri.starts_with("/catalog/")
         || uri.starts_with("/meta/")
+        || uri.starts_with("/hydrogen-meta/catalog/")
+        || uri.starts_with("/hydrogen-meta/meta/")
         || uri.starts_with("/resolve/")
         || uri.starts_with("/cached/")
     {
