@@ -84,6 +84,31 @@ pub fn fuzzy_match_title(query: &str, title: &str) -> f64 {
     similarity
 }
 
+pub fn has_required_title_tokens(query: &str, title: &str) -> bool {
+    let query_tokens = significant_tokens(query);
+    if query_tokens.is_empty() {
+        return true;
+    }
+
+    let title_tokens = significant_tokens(title);
+    if title_tokens.is_empty() {
+        return false;
+    }
+
+    for token in query_tokens.iter().filter(|token| is_numeric_token(token)) {
+        if !title_tokens.iter().any(|candidate| candidate == token) {
+            return false;
+        }
+    }
+
+    let matched = query_tokens
+        .iter()
+        .filter(|token| title_tokens.iter().any(|candidate| candidate == *token))
+        .count();
+
+    matched * 2 >= query_tokens.len().max(2)
+}
+
 fn clean_title(title: &str) -> String {
     title
         .to_lowercase()
@@ -93,6 +118,14 @@ fn clean_title(title: &str) -> String {
         .filter(|token| !is_noise_token(token))
         .collect::<Vec<&str>>()
         .join(" ")
+}
+
+fn significant_tokens(title: &str) -> Vec<String> {
+    clean_title(title)
+        .split_whitespace()
+        .filter(|token| !is_stopword(token))
+        .map(str::to_string)
+        .collect()
 }
 
 fn is_noise_token(token: &str) -> bool {
@@ -132,11 +165,26 @@ fn is_noise_token(token: &str) -> bool {
         && token[1..].chars().any(|c| c.is_ascii_digit())
 }
 
+fn is_stopword(token: &str) -> bool {
+    matches!(
+        token,
+        "the" | "a" | "an" | "and" | "of" | "to" | "in" | "on" | "for" | "with"
+    )
+}
+
+fn is_numeric_token(token: &str) -> bool {
+    !token.is_empty() && token.chars().all(|c| c.is_ascii_digit())
+}
+
 pub fn extract_year(title: &str) -> Option<u32> {
+    extract_all_years(title).into_iter().next()
+}
+
+pub fn extract_all_years(title: &str) -> Vec<u32> {
     YEAR_REGEX
         .captures_iter(&title.to_uppercase())
         .filter_map(|caps| caps.get(1).and_then(|m| m.as_str().parse().ok()))
-        .next()
+        .collect()
 }
 
 pub fn extract_season(title: &str) -> Option<u32> {
@@ -252,6 +300,7 @@ mod tests {
         assert_eq!(extract_year("Show Title 2020"), Some(2020));
         assert_eq!(extract_year("Show (2021)"), Some(2021));
         assert_eq!(extract_year("Show"), None);
+        assert_eq!(extract_all_years("Collection 1977 2018"), vec![1977, 2018]);
     }
 
     #[test]
@@ -313,5 +362,25 @@ mod tests {
         );
 
         assert!(exact_episode > season_pack);
+    }
+
+    #[test]
+    fn test_required_title_tokens_rejects_missing_numeric_token() {
+        assert!(has_required_title_tokens(
+            "Jujutsu Kaisen 0",
+            "Jujutsu Kaisen 0 Movie 2021 1080p BluRay"
+        ));
+        assert!(!has_required_title_tokens(
+            "Jujutsu Kaisen 0",
+            "Jujutsu Kaisen Execution 2025 1080p TS"
+        ));
+    }
+
+    #[test]
+    fn test_required_title_tokens_accepts_partial_coverage_for_longer_titles() {
+        assert!(has_required_title_tokens(
+            "Avatar The Last Airbender",
+            "Avatar Airbender 2005 1080p"
+        ));
     }
 }

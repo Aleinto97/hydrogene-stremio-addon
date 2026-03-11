@@ -1,5 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::collections::HashSet;
 use tracing::info;
 
@@ -10,9 +12,17 @@ pub mod nyaa;
 pub mod rutor;
 pub mod rutracker;
 pub mod solidtorrents;
+pub mod torznab;
 pub mod tpb;
 pub mod x1337;
 pub mod yts;
+
+static ANIME_EP_QUERY_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:E|EP|EPISODE)\s*\d{1,3}\b").expect("Invalid anime episode query regex")
+});
+
+static TRAILING_EPISODE_NUMBER_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b\d{2,3}\b$").expect("Invalid trailing episode regex"));
 
 #[derive(Debug, Clone)]
 pub struct ScrapedTorrent {
@@ -53,6 +63,7 @@ impl ScraperManager {
             Box::new(eztv::EztvScraper::new()?),
             Box::new(nekobt::NekoBtScraper::new()?),
             Box::new(solidtorrents::SolidScraper::new()?),
+            Box::new(torznab::TorznabScraper::new()?),
         ];
 
         Ok(Self { scrapers })
@@ -70,7 +81,7 @@ impl ScraperManager {
         } else {
             Duration::from_secs(5)
         };
-        let target_results = if is_episode_query { 12 } else { 100 };
+        let target_results = if is_episode_query { 8 } else { 100 };
 
         let target_scrapers: Vec<_> = self
             .scrapers
@@ -84,7 +95,7 @@ impl ScraperManager {
 
         let num_scrapers = target_scrapers.len();
         let min_scrapers_to_wait = if is_episode_query {
-            (num_scrapers as f32 * 0.5).ceil() as usize
+            ((num_scrapers as f32 * 0.5).ceil() as usize).max(4)
         } else {
             (num_scrapers as f32 * 0.7).ceil() as usize
         };
@@ -163,6 +174,8 @@ fn looks_like_episode_query(query: &str) -> bool {
     query_upper.contains('X') && query_upper.chars().any(|c| c.is_ascii_digit())
         || query_upper.contains("SEASON ")
         || find_sxxexx_pattern(&query_upper)
+        || ANIME_EP_QUERY_REGEX.is_match(query)
+        || TRAILING_EPISODE_NUMBER_REGEX.is_match(query)
 }
 
 fn find_sxxexx_pattern(query_upper: &str) -> bool {

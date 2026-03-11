@@ -199,31 +199,25 @@ impl MetadataClient {
             .or(native_title)
             .ok_or_else(|| anyhow!("No title found"))?;
 
-        let mut queries = vec![primary_title.to_string()];
+        let mut queries = Vec::new();
+        let year_str = year.as_deref();
 
-        if let Some(ref year) = year {
-            queries.push(format!("{} {}", primary_title, year));
-        }
+        self.add_anime_title_variants(&mut queries, primary_title, year_str);
 
         if let Some(romaji) = romaji_title {
             if romaji != primary_title {
-                queries.push(romaji.to_string());
-                if let Some(ref year) = year {
-                    queries.push(format!("{} {}", romaji, year));
-                }
+                self.add_anime_title_variants(&mut queries, romaji, year_str);
             }
         }
 
         if let Some(native) = native_title {
             if native != primary_title {
-                queries.push(native.to_string());
+                self.add_anime_title_variants(&mut queries, native, None);
             }
         }
 
-        for synonym in synonyms.iter().take(3) {
-            if !queries.contains(synonym) {
-                queries.push(synonym.clone());
-            }
+        for synonym in synonyms.iter().take(6) {
+            self.add_anime_title_variants(&mut queries, synonym, year_str);
         }
 
         if let Some(ep) = episode {
@@ -252,19 +246,81 @@ impl MetadataClient {
         let mut queries = Vec::new();
 
         for title in base_titles {
-            queries.push(format!("{} {:02}", title, episode));
-            queries.push(format!("{} - {:02}", title, episode));
-            queries.push(format!("{} E{:02}", title, episode));
-            queries.push(format!("{} EP{:02}", title, episode));
-            queries.push(format!("{} Episode {:02}", title, episode));
+            for candidate in [
+                format!("{} {:02}", title, episode),
+                format!("{} - {:02}", title, episode),
+                format!("{} - {:02}v2", title, episode),
+                format!("{} E{:02}", title, episode),
+                format!("{} E{}", title, episode),
+                format!("{} EP{:02}", title, episode),
+                format!("{} EP{}", title, episode),
+                format!("{} Episode {:02}", title, episode),
+                format!("{} Episode {}", title, episode),
+                format!("{} [{:02}]", title, episode),
+                format!("{} [{:02}v2]", title, episode),
+            ] {
+                Self::push_unique_query(&mut queries, candidate);
+            }
 
             if episode < 10 {
-                queries.push(format!("{} {}", title, episode));
-                queries.push(format!("{} - {}", title, episode));
+                for candidate in [
+                    format!("{} {}", title, episode),
+                    format!("{} - {}", title, episode),
+                    format!("{} - {}v2", title, episode),
+                ] {
+                    Self::push_unique_query(&mut queries, candidate);
+                }
             }
         }
 
         queries
+    }
+
+    fn add_anime_title_variants(&self, queries: &mut Vec<String>, title: &str, year: Option<&str>) {
+        let title = title.trim();
+        if title.is_empty() {
+            return;
+        }
+
+        Self::push_unique_query(queries, title.to_string());
+
+        if let Some(year) = year {
+            Self::push_unique_query(queries, format!("{} {}", title, year));
+        }
+
+        let no_colon = title.replace(':', "");
+        if no_colon != title {
+            Self::push_unique_query(queries, no_colon.clone());
+            if let Some(year) = year {
+                Self::push_unique_query(queries, format!("{} {}", no_colon, year));
+            }
+        }
+
+        if let Some((head, _)) = title.split_once(':') {
+            let head = head.trim();
+            if head.split_whitespace().count() >= 2 {
+                Self::push_unique_query(queries, head.to_string());
+                if let Some(year) = year {
+                    Self::push_unique_query(queries, format!("{} {}", head, year));
+                }
+            }
+        }
+    }
+
+    fn push_unique_query(queries: &mut Vec<String>, candidate: String) {
+        let candidate = candidate.trim().to_string();
+        if candidate.is_empty() {
+            return;
+        }
+
+        if queries
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&candidate))
+        {
+            return;
+        }
+
+        queries.push(candidate);
     }
 
     fn add_episode_queries(&self, metadata: &mut ContentMetadata, season: u32, episode: u32) {
