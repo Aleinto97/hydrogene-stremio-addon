@@ -391,8 +391,13 @@ impl MetadataIndex {
     }
 
     async fn ensure_hydra_loaded(&self, hydra: &HydraId) -> Result<()> {
-        if self.items.read().await.contains_key(&hydra.base_key()) {
-            return Ok(());
+        if let Some(existing) = self.items.read().await.get(&hydra.base_key()).cloned() {
+            let needs_tmdb_hydration = matches!(hydra.source, HydraSource::Tmdb)
+                && ((hydra.kind == HydraKind::Movie && existing.imdb_id.is_none())
+                    || (hydra.kind != HydraKind::Movie && existing.episodes.is_empty()));
+            if !needs_tmdb_hydration {
+                return Ok(());
+            }
         }
 
         match hydra.source {
