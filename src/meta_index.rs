@@ -24,6 +24,13 @@ pub struct IndexedEpisode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaTrailer {
+    pub source: String,
+    #[serde(rename = "type")]
+    pub trailer_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexedContent {
     pub hydra_id: String,
     pub kind: String,
@@ -35,6 +42,7 @@ pub struct IndexedContent {
     pub description: Option<String>,
     pub poster: Option<String>,
     pub background: Option<String>,
+    pub logo: Option<String>,
     pub runtime: Option<String>,
     pub genres: Vec<String>,
     pub popularity: f64,
@@ -43,6 +51,11 @@ pub struct IndexedContent {
     pub imdb_id: Option<String>,
     pub tmdb_id: Option<i64>,
     pub anidb_id: Option<i32>,
+    pub released: Option<String>,
+    pub imdb_rating: Option<String>,
+    pub director: Vec<String>,
+    pub cast: Vec<String>,
+    pub trailers: Vec<MetaTrailer>,
     pub episodes: Vec<IndexedEpisode>,
     pub updated_at: DateTime<Utc>,
 }
@@ -56,6 +69,8 @@ pub struct CatalogMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poster: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -63,6 +78,14 @@ pub struct CatalogMeta {
     pub genres: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "releaseInfo")]
     pub release_info: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "imdbRating")]
+    pub imdb_rating: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub director: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub cast: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub trailers: Vec<MetaTrailer>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,6 +109,8 @@ pub struct MetaItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poster: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -95,6 +120,16 @@ pub struct MetaItem {
     pub release_info: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub released: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "imdbRating")]
+    pub imdb_rating: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub director: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub cast: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub trailers: Vec<MetaTrailer>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub videos: Vec<MetaVideo>,
 }
@@ -138,7 +173,7 @@ struct TmdbGenreResponse {
     genres: Vec<TmdbGenre>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct TmdbGenre {
     id: i64,
     name: String,
@@ -158,6 +193,11 @@ struct TmdbMovieDetails {
     external_ids: Option<TmdbExternalIds>,
     #[serde(default)]
     popularity: f64,
+    #[serde(default)]
+    vote_average: f64,
+    credits: Option<TmdbCredits>,
+    images: Option<TmdbImages>,
+    videos: Option<TmdbVideos>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,6 +219,13 @@ struct TmdbTvDetails {
     #[serde(default)]
     number_of_episodes: u32,
     original_language: Option<String>,
+    #[serde(default)]
+    vote_average: f64,
+    #[serde(default)]
+    created_by: Vec<TmdbNamedPerson>,
+    aggregate_credits: Option<TmdbAggregateCredits>,
+    images: Option<TmdbImages>,
+    videos: Option<TmdbVideos>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,6 +250,87 @@ struct TmdbEpisode {
     name: String,
     air_date: Option<String>,
     still_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbCredits {
+    #[serde(default)]
+    cast: Vec<TmdbCastMember>,
+    #[serde(default)]
+    crew: Vec<TmdbCrewMember>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbAggregateCredits {
+    #[serde(default)]
+    cast: Vec<TmdbCastMember>,
+    #[serde(default)]
+    crew: Vec<TmdbCrewMember>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbCastMember {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbCrewMember {
+    name: String,
+    job: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbNamedPerson {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbImages {
+    #[serde(default)]
+    logos: Vec<TmdbImageAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbImageAsset {
+    file_path: String,
+    #[serde(default)]
+    iso_639_1: Option<String>,
+    #[serde(default)]
+    vote_average: f64,
+    #[serde(default)]
+    file_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbVideos {
+    #[serde(default)]
+    results: Vec<TmdbVideoAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbVideoAsset {
+    key: String,
+    site: String,
+    #[serde(rename = "type")]
+    video_type: String,
+    #[serde(default)]
+    official: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct IndexedContentExtra {
+    #[serde(default)]
+    logo: Option<String>,
+    #[serde(default)]
+    released: Option<String>,
+    #[serde(default)]
+    imdb_rating: Option<String>,
+    #[serde(default)]
+    director: Vec<String>,
+    #[serde(default)]
+    cast: Vec<String>,
+    #[serde(default)]
+    trailers: Vec<MetaTrailer>,
 }
 
 impl MetadataIndex {
@@ -360,10 +488,15 @@ impl MetadataIndex {
                 content_type: item.content_type.clone(),
                 name: item.title.clone(),
                 poster: item.poster.clone(),
+                logo: item.logo.clone(),
                 background: item.background.clone(),
                 description: item.description.clone(),
                 genres: item.genres.clone(),
                 release_info: item.year.clone(),
+                imdb_rating: item.imdb_rating.clone(),
+                director: item.director.clone(),
+                cast: item.cast.clone(),
+                trailers: item.trailers.clone(),
             })
             .collect())
     }
@@ -583,6 +716,7 @@ impl MetadataIndex {
             description: item.overview.clone(),
             poster: image_url(item.poster_path.as_deref(), "w500"),
             background: image_url(item.backdrop_path.as_deref(), "w1280"),
+            logo: None,
             runtime: None,
             genres,
             popularity: item.popularity,
@@ -591,6 +725,15 @@ impl MetadataIndex {
             imdb_id: None,
             tmdb_id: Some(item.id),
             anidb_id: None,
+            released: item
+                .release_date
+                .as_ref()
+                .or(item.first_air_date.as_ref())
+                .and_then(|value| iso_datetime(value)),
+            imdb_rating: None,
+            director: Vec::new(),
+            cast: Vec::new(),
+            trailers: Vec::new(),
             episodes: Vec::new(),
             updated_at: Utc::now(),
         };
@@ -626,14 +769,25 @@ impl MetadataIndex {
                     description: details.overview.clone(),
                     poster: image_url(details.poster_path.as_deref(), "w500"),
                     background: image_url(details.backdrop_path.as_deref(), "w1280"),
+                    logo: pick_logo_url(details.images.as_ref()),
                     runtime: details.runtime.map(|minutes| format!("{} min", minutes)),
                     genres: details.genres.into_iter().map(|genre| genre.name).collect(),
                     popularity: details.popularity,
                     is_anime: false,
                     aliases: vec![details.title],
-                    imdb_id: details.external_ids.and_then(|external| external.imdb_id),
+                    imdb_id: details
+                        .external_ids
+                        .as_ref()
+                        .and_then(|external| external.imdb_id.clone()),
                     tmdb_id: Some(details.id),
                     anidb_id: None,
+                    released: details.release_date.as_deref().and_then(iso_datetime),
+                    imdb_rating: format_rating(details.vote_average),
+                    director: directors_from_crew(
+                        details.credits.as_ref().map(|credits| &credits.crew),
+                    ),
+                    cast: cast_names(details.credits.as_ref().map(|credits| &credits.cast)),
+                    trailers: trailers_from_videos(details.videos.as_ref()),
                     episodes: Vec::new(),
                     updated_at: Utc::now(),
                 };
@@ -657,40 +811,58 @@ impl MetadataIndex {
                     HydraKind::Series
                 };
                 let hydra = HydraId::new(hydra_kind, HydraSource::Tmdb, tmdb_id.to_string());
-                let mut episodes = Vec::new();
-                if is_anime && details.number_of_episodes > 0 {
-                    for episode in 1..=details.number_of_episodes {
-                        episodes.push(IndexedEpisode {
-                            season: 1,
-                            episode,
-                            title: format!("Episode {}", episode),
-                            released_at: None,
-                            thumbnail: None,
-                        });
-                    }
-                } else {
-                    for season in details
-                        .seasons
-                        .iter()
-                        .filter(|season| season.season_number > 0)
-                    {
-                        let season_url = format!(
-                            "{}/tv/{}/season/{}?api_key={}",
-                            TMDB_API_BASE, tmdb_id, season.season_number, api_key
-                        );
-                        let payload: TmdbSeasonDetails =
-                            self.client.get(&season_url).send().await?.json().await?;
-                        episodes.extend(payload.episodes.into_iter().map(|episode| {
-                            IndexedEpisode {
-                                season: season.season_number,
-                                episode: episode.episode_number,
-                                title: episode.name,
-                                released_at: episode.air_date,
-                                thumbnail: image_url(episode.still_path.as_deref(), "w500"),
-                            }
-                        }));
-                    }
+                let mut season_episodes = Vec::new();
+                for season in details
+                    .seasons
+                    .iter()
+                    .filter(|season| season.season_number > 0)
+                {
+                    let season_url = format!(
+                        "{}/tv/{}/season/{}?api_key={}",
+                        TMDB_API_BASE, tmdb_id, season.season_number, api_key
+                    );
+                    let payload: TmdbSeasonDetails =
+                        self.client.get(&season_url).send().await?.json().await?;
+                    season_episodes.extend(payload.episodes.into_iter().map(|episode| {
+                        IndexedEpisode {
+                            season: season.season_number,
+                            episode: episode.episode_number,
+                            title: episode.name,
+                            released_at: episode.air_date.as_deref().and_then(iso_datetime),
+                            thumbnail: image_url(episode.still_path.as_deref(), "w500"),
+                        }
+                    }));
                 }
+
+                let episodes = if is_anime && !season_episodes.is_empty() {
+                    season_episodes
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, episode)| IndexedEpisode {
+                            season: 1,
+                            episode: (index + 1) as u32,
+                            title: episode.title,
+                            released_at: episode.released_at,
+                            thumbnail: episode.thumbnail,
+                        })
+                        .collect()
+                } else if !season_episodes.is_empty() {
+                    season_episodes
+                } else {
+                    let mut fallback = Vec::new();
+                    if is_anime && details.number_of_episodes > 0 {
+                        for episode in 1..=details.number_of_episodes {
+                            fallback.push(IndexedEpisode {
+                                season: 1,
+                                episode,
+                                title: format!("Episode {}", episode),
+                                released_at: None,
+                                thumbnail: None,
+                            });
+                        }
+                    }
+                    fallback
+                };
 
                 let runtime = details
                     .episode_run_time
@@ -704,6 +876,19 @@ impl MetadataIndex {
                 }
                 aliases.sort();
                 aliases.dedup();
+                let genres = details
+                    .genres
+                    .iter()
+                    .map(|genre| genre.name.clone())
+                    .collect::<Vec<_>>();
+                let director = series_directors(&details);
+                let cast = cast_names(
+                    details
+                        .aggregate_credits
+                        .as_ref()
+                        .map(|credits| &credits.cast),
+                );
+                let trailers = trailers_from_videos(details.videos.as_ref());
 
                 let content = IndexedContent {
                     hydra_id: hydra.to_string(),
@@ -720,14 +905,23 @@ impl MetadataIndex {
                     description: details.overview.clone(),
                     poster: image_url(details.poster_path.as_deref(), "w500"),
                     background: image_url(details.backdrop_path.as_deref(), "w1280"),
+                    logo: pick_logo_url(details.images.as_ref()),
                     runtime,
-                    genres: details.genres.into_iter().map(|genre| genre.name).collect(),
+                    genres,
                     popularity: details.popularity,
                     is_anime,
                     aliases,
-                    imdb_id: details.external_ids.and_then(|external| external.imdb_id),
+                    imdb_id: details
+                        .external_ids
+                        .as_ref()
+                        .and_then(|external| external.imdb_id.clone()),
                     tmdb_id: Some(details.id),
                     anidb_id: None,
+                    released: details.first_air_date.as_deref().and_then(iso_datetime),
+                    imdb_rating: format_rating(details.vote_average),
+                    director,
+                    cast,
+                    trailers,
                     episodes,
                     updated_at: Utc::now(),
                 };
@@ -816,14 +1010,22 @@ impl MetadataIndex {
 
         if let Some(pool) = &self.pool {
             let genres_json = serde_json::to_value(&content.genres)?;
+            let extra_json = serde_json::to_value(IndexedContentExtra {
+                logo: content.logo.clone(),
+                released: content.released.clone(),
+                imdb_rating: content.imdb_rating.clone(),
+                director: content.director.clone(),
+                cast: content.cast.clone(),
+                trailers: content.trailers.clone(),
+            })?;
             sqlx::query(
                 r#"
                 INSERT INTO content_items (
                     hydra_id, kind, content_type, primary_source, primary_id, title, year,
-                    description, poster, background, runtime, genres, popularity, is_anime, updated_at
+                    description, poster, background, runtime, genres, extra, popularity, is_anime, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
-                    $8, $9, $10, $11, $12, $13, $14, $15
+                    $8, $9, $10, $11, $12, $13, $14, $15, $16
                 )
                 ON CONFLICT (hydra_id) DO UPDATE SET
                     kind = EXCLUDED.kind,
@@ -837,6 +1039,7 @@ impl MetadataIndex {
                     background = EXCLUDED.background,
                     runtime = EXCLUDED.runtime,
                     genres = EXCLUDED.genres,
+                    extra = EXCLUDED.extra,
                     popularity = EXCLUDED.popularity,
                     is_anime = EXCLUDED.is_anime,
                     updated_at = EXCLUDED.updated_at
@@ -854,6 +1057,7 @@ impl MetadataIndex {
             .bind(&content.background)
             .bind(&content.runtime)
             .bind(&genres_json)
+            .bind(&extra_json)
             .bind(content.popularity)
             .bind(content.is_anime)
             .bind(content.updated_at)
@@ -941,13 +1145,14 @@ impl MetadataIndex {
             Option<String>,
             Option<String>,
             serde_json::Value,
+            serde_json::Value,
             f64,
             bool,
             DateTime<Utc>,
         )>(
             r#"
             SELECT hydra_id, kind, content_type, primary_source, primary_id, title, year,
-                   description, poster, background, runtime, genres, popularity, is_anime, updated_at
+                   description, poster, background, runtime, genres, extra, popularity, is_anime, updated_at
             FROM content_items
             "#,
         )
@@ -1001,6 +1206,7 @@ impl MetadataIndex {
         let mut items = self.items.write().await;
         for row in item_rows {
             let genres: Vec<String> = serde_json::from_value(row.11).unwrap_or_default();
+            let extra: IndexedContentExtra = serde_json::from_value(row.12).unwrap_or_default();
             let (imdb_id, tmdb_id, anidb_id) =
                 external_map.remove(&row.0).unwrap_or((None, None, None));
             items.insert(
@@ -1017,15 +1223,21 @@ impl MetadataIndex {
                     poster: row.8,
                     background: row.9,
                     runtime: row.10,
+                    logo: extra.logo,
                     genres,
-                    popularity: row.12,
-                    is_anime: row.13,
+                    popularity: row.13,
+                    is_anime: row.14,
                     aliases: alias_map.remove(&row.0).unwrap_or_default(),
                     imdb_id,
                     tmdb_id,
                     anidb_id,
+                    released: extra.released,
+                    imdb_rating: extra.imdb_rating,
+                    director: extra.director,
+                    cast: extra.cast,
+                    trailers: extra.trailers,
                     episodes: episode_map.remove(&row.0).unwrap_or_default(),
-                    updated_at: row.14,
+                    updated_at: row.15,
                 },
             );
         }
@@ -1198,6 +1410,7 @@ impl MetadataIndex {
                 background TEXT,
                 runtime TEXT,
                 genres JSONB NOT NULL DEFAULT '[]'::jsonb,
+                extra JSONB NOT NULL DEFAULT '{}'::jsonb,
                 popularity DOUBLE PRECISION NOT NULL DEFAULT 0,
                 is_anime BOOLEAN NOT NULL DEFAULT FALSE,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1236,6 +1449,10 @@ impl MetadataIndex {
                 value JSONB NOT NULL DEFAULT '{}'::jsonb,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+            "#,
+            r#"
+            ALTER TABLE content_items
+            ADD COLUMN IF NOT EXISTS extra JSONB NOT NULL DEFAULT '{}'::jsonb
             "#,
         ] {
             sqlx::query(statement).execute(pool).await?;
@@ -1279,11 +1496,17 @@ impl MetadataIndex {
             content_type: item.content_type.clone(),
             name: item.title.clone(),
             poster: item.poster.clone(),
+            logo: item.logo.clone(),
             background: item.background.clone(),
             description: item.description.clone(),
             genres: item.genres.clone(),
             release_info: item.year.clone(),
             runtime: item.runtime.clone(),
+            released: item.released.clone(),
+            imdb_rating: item.imdb_rating.clone(),
+            director: item.director.clone(),
+            cast: item.cast.clone(),
+            trailers: item.trailers.clone(),
             videos,
         }
     }
@@ -1371,6 +1594,94 @@ fn image_url(path: Option<&str>, size: &str) -> Option<String> {
     path.map(|path| format!("https://image.tmdb.org/t/p/{size}{path}"))
 }
 
+fn pick_logo_url(images: Option<&TmdbImages>) -> Option<String> {
+    let mut logos = images?.logos.iter().collect::<Vec<_>>();
+    logos.sort_by(|a, b| {
+        logo_rank(b)
+            .cmp(&logo_rank(a))
+            .then_with(|| b.vote_average.total_cmp(&a.vote_average))
+    });
+    logos
+        .first()
+        .and_then(|logo| image_url(Some(logo.file_path.as_str()), "original"))
+}
+
+fn logo_rank(logo: &TmdbImageAsset) -> i32 {
+    let language_rank = match logo.iso_639_1.as_deref() {
+        Some("en") => 3,
+        None => 2,
+        _ => 1,
+    };
+    let file_type_rank = match logo.file_type.as_deref() {
+        Some(".png") => 2,
+        Some(".svg") => 1,
+        _ => 0,
+    };
+    language_rank * 10 + file_type_rank
+}
+
+fn format_rating(vote_average: f64) -> Option<String> {
+    (vote_average > 0.0).then(|| format!("{vote_average:.1}"))
+}
+
+fn iso_datetime(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty() && trimmed != "\\N").then(|| format!("{trimmed}T00:00:00.000Z"))
+}
+
+fn directors_from_crew(crew: Option<&Vec<TmdbCrewMember>>) -> Vec<String> {
+    dedupe_case_insensitive(
+        crew.into_iter()
+            .flat_map(|crew| crew.iter())
+            .filter(|member| member.job.as_deref() == Some("Director"))
+            .map(|member| member.name.clone())
+            .collect(),
+    )
+}
+
+fn cast_names(cast: Option<&Vec<TmdbCastMember>>) -> Vec<String> {
+    cast.into_iter()
+        .flat_map(|cast| cast.iter().take(8))
+        .map(|member| member.name.clone())
+        .collect()
+}
+
+fn series_directors(details: &TmdbTvDetails) -> Vec<String> {
+    let mut names = details
+        .created_by
+        .iter()
+        .map(|person| person.name.clone())
+        .collect::<Vec<_>>();
+    if let Some(credits) = details.aggregate_credits.as_ref() {
+        names.extend(
+            credits
+                .crew
+                .iter()
+                .filter(|member| member.job.as_deref() == Some("Director"))
+                .map(|member| member.name.clone()),
+        );
+    }
+    dedupe_case_insensitive(names)
+}
+
+fn trailers_from_videos(videos: Option<&TmdbVideos>) -> Vec<MetaTrailer> {
+    videos
+        .into_iter()
+        .flat_map(|videos| videos.results.iter())
+        .filter(|video| video.site.eq_ignore_ascii_case("YouTube"))
+        .filter(|video| matches!(video.video_type.as_str(), "Trailer" | "Teaser"))
+        .take(3)
+        .map(|video| MetaTrailer {
+            source: format!("https://www.youtube.com/watch?v={}", video.key),
+            trailer_type: if video.official {
+                "Trailer".to_string()
+            } else {
+                video.video_type.clone()
+            },
+        })
+        .collect()
+}
+
 fn normalize(value: &str) -> String {
     value
         .to_lowercase()
@@ -1427,6 +1738,7 @@ mod tests {
             description: None,
             poster: None,
             background: None,
+            logo: None,
             runtime: None,
             genres: vec!["Animation".to_string()],
             popularity: 100.0,
@@ -1435,6 +1747,11 @@ mod tests {
             imdb_id: None,
             tmdb_id: Some(1),
             anidb_id: None,
+            released: None,
+            imdb_rating: None,
+            director: Vec::new(),
+            cast: Vec::new(),
+            trailers: Vec::new(),
             episodes: vec![],
             updated_at: Utc::now(),
         };
