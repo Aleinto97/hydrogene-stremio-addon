@@ -1178,7 +1178,7 @@ impl MetadataIndex {
     }
 
     async fn ensure_tables(pool: &PgPool) -> Result<()> {
-        sqlx::query(
+        for statement in [
             r#"
             CREATE TABLE IF NOT EXISTS content_items (
                 hydra_id TEXT PRIMARY KEY,
@@ -1196,22 +1196,25 @@ impl MetadataIndex {
                 popularity DOUBLE PRECISION NOT NULL DEFAULT 0,
                 is_anime BOOLEAN NOT NULL DEFAULT FALSE,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
+            )
+            "#,
+            r#"
             CREATE TABLE IF NOT EXISTS content_aliases (
                 hydra_id TEXT NOT NULL,
                 alias TEXT NOT NULL,
                 source TEXT NOT NULL,
                 PRIMARY KEY (hydra_id, alias)
-            );
-
+            )
+            "#,
+            r#"
             CREATE TABLE IF NOT EXISTS content_external_ids (
                 hydra_id TEXT PRIMARY KEY,
                 imdb_id TEXT,
                 tmdb_id BIGINT,
                 anidb_id INTEGER
-            );
-
+            )
+            "#,
+            r#"
             CREATE TABLE IF NOT EXISTS content_episodes (
                 hydra_id TEXT NOT NULL,
                 season INTEGER NOT NULL,
@@ -1220,17 +1223,18 @@ impl MetadataIndex {
                 released_at TEXT,
                 thumbnail TEXT,
                 PRIMARY KEY (hydra_id, season, episode)
-            );
-
+            )
+            "#,
+            r#"
             CREATE TABLE IF NOT EXISTS sync_state (
                 key TEXT PRIMARY KEY,
                 value JSONB NOT NULL DEFAULT '{}'::jsonb,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
+            )
             "#,
-        )
-        .execute(pool)
-        .await?;
+        ] {
+            sqlx::query(statement).execute(pool).await?;
+        }
 
         Ok(())
     }

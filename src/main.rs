@@ -115,7 +115,14 @@ async fn main() -> anyhow::Result<()> {
         MetadataClient::new(http_client.clone())?
     };
     let metadata_index = Arc::new(MetadataIndex::new(http_client.clone()).await?);
-    metadata_index.bootstrap().await?;
+    {
+        let metadata_index = metadata_index.clone();
+        tokio::spawn(async move {
+            if let Err(error) = metadata_index.bootstrap().await {
+                tracing::warn!("Metadata bootstrap failed: {}", error);
+            }
+        });
+    }
     metadata_index.clone().spawn_refresh_task();
 
     let app_state = AppState {
